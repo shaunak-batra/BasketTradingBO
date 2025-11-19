@@ -1,0 +1,29 @@
+# Development dependencies
+# Install with: pip install -r requirements-dev.txt
+
+# Include base requirements
+-r requirements.txt
+
+# Code Formatting & Linting
+black>=23.9.1
+flake8>=6.1.0
+isort>=5.12.0
+
+# Type Checking
+mypy>=1.5.1
+
+# Documentation
+sphinx>=7.2.6
+sphinx-rtd-theme>=1.3.0
+nbsphinx>=0.9.3
+
+# Interactive Development
+ipython>=8.15.0
+jupyter>=1.0.0
+ipywidgets>=8.1.1
+notebook>=7.0.0
+
+# Additional Testing Tools
+pytest-xdist>=3.3.1
+pytest-mock>=3.11.1
+coverage>=7.3.0
