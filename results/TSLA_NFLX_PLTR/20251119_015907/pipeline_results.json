@@ -1,0 +1,49 @@
+{
+  "pipeline_parameters": {
+    "tickers": [
+      "TSLA",
+      "NFLX",
+      "PLTR"
+    ],
+    "start_date": "2022-01-01",
+    "end_date": "2025-01-01",
+    "optimized": false
+  },
+  "strategy_parameters": {
+    "entry_threshold": 2.0,
+    "exit_threshold": 0.5,
+    "stop_loss": 4.0,
+    "lookback_window": 252,
+    "position_size": 0.2,
+    "min_holding_period": 5
+  },
+  "cointegration": {
+    "is_cointegrated": true,
+    "rank": 1,
+    "weights": [
+      0.020705783209483172,
+      0.08746558368016284,
+      -0.154732577177919
+    ],
+    "half_life_days": null,
+    "is_stationary": true
+  },
+  "performance_metrics": {
+    "total_return": -0.046200740900604664,
+    "annualized_return": -0.01313817868798961,
+    "sharpe_ratio": -0.18333081157739547,
+    "sortino_ratio": -0.13456770225055237,
+    "max_drawdown": -0.08186299578678823,
+    "calmar_ratio": -0.16048983501908398,
+    "win_rate": 0.28021248339973437,
+    "profit_factor": 0.8844341962593386,
+    "num_trades": 416
+  },
+  "risk_metrics": {
+    "var_95": 0.000777168995618055,
+    "var_95_es": 0.004661487907985613,
+    "var_99": 0.002664438467706294,
+    "var_99_es": 0.015171956415413764
+  },
+  "transaction_costs": 629.0827875702381
+}

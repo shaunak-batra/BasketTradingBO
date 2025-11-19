@@ -1,0 +1,142 @@
+═══════════════════════════════════════════════════════════════
+    FRESH GIT SETUP - RUN THESE COMMANDS IN ORDER
+═══════════════════════════════════════════════════════════════
+
+Open PowerShell in: C:\Users\shaun\OneDrive\Desktop\BasketTradingBO
+
+────────────────────────────────────────────────────────────────
+STEP 1: Configure Git (one-time setup)
+────────────────────────────────────────────────────────────────
+git config --global user.name "Shaun Batra"
+git config --global user.email "your.email@example.com"
+
+(Replace with your actual email - use the same one as your GitHub account!)
+
+────────────────────────────────────────────────────────────────
+STEP 2: Initialize Git Repository
+────────────────────────────────────────────────────────────────
+git init
+git branch -M main
+
+────────────────────────────────────────────────────────────────
+STEP 3: Stage All Files
+────────────────────────────────────────────────────────────────
+git add .
+
+────────────────────────────────────────────────────────────────
+STEP 4: Check What Will Be Committed
+────────────────────────────────────────────────────────────────
+git status
+
+You should see GREEN files like:
+  - .gitignore
+  - README.md
+  - setup.py
+  - src/
+  - scripts/
+  - tests/
+  - docs/images/
+
+You should NOT see:
+  - venv/
+  - results/
+  - screenshots/
+  - __pycache__/
+
+────────────────────────────────────────────────────────────────
+STEP 5: Create Initial Commit
+────────────────────────────────────────────────────────────────
+git commit -m "Initial commit: Statistical arbitrage basket trading system with Bayesian optimization"
+
+────────────────────────────────────────────────────────────────
+STEP 6: Delete Existing GitHub Repo (if it has conflicts)
+────────────────────────────────────────────────────────────────
+Go to: https://github.com/shaunak-batra/BasketTradingBO/settings
+
+Scroll to bottom → Danger Zone → Delete this repository
+
+Type: BasketTradingBO
+
+Click: "I understand the consequences, delete this repository"
+
+────────────────────────────────────────────────────────────────
+STEP 7: Create Fresh GitHub Repository
+────────────────────────────────────────────────────────────────
+Go to: https://github.com/new
+
+Repository name: BasketTradingBO
+Description: Statistical arbitrage system using cointegration and Bayesian optimization
+Visibility: Public
+
+IMPORTANT: DO NOT check any of these:
+  ☐ Add a README file
+  ☐ Add .gitignore
+  ☐ Choose a license
+
+Click: "Create repository"
+
+────────────────────────────────────────────────────────────────
+STEP 8: Add Remote Repository
+────────────────────────────────────────────────────────────────
+git remote add origin https://github.com/shaunak-batra/BasketTradingBO.git
+
+────────────────────────────────────────────────────────────────
+STEP 9: Push to GitHub
+────────────────────────────────────────────────────────────────
+git push -u origin main
+
+When prompted:
+  Username: shaunak-batra
+  Password: [Your Personal Access Token]
+
+────────────────────────────────────────────────────────────────
+DONE! Your repository is at:
+https://github.com/shaunak-batra/BasketTradingBO
+────────────────────────────────────────────────────────────────
+
+
+═══════════════════════════════════════════════════════════════
+    NEED A PERSONAL ACCESS TOKEN?
+═══════════════════════════════════════════════════════════════
+
+1. Go to: https://github.com/settings/tokens
+2. Click: "Generate new token" → "Generate new token (classic)"
+3. Note: "Git operations"
+4. Expiration: 90 days
+5. Scopes: Check ☑ repo
+6. Click: "Generate token"
+7. COPY THE TOKEN (starts with ghp_)
+8. Use as password when pushing
+
+═══════════════════════════════════════════════════════════════
+    WHAT WILL BE PUSHED (85 files, ~1 MB)
+═══════════════════════════════════════════════════════════════
+
+✅ Source Code:
+  - src/ (all Python modules)
+  - scripts/ (pipeline, backtest, optimization)
+  - tests/ (unit and integration tests)
+
+✅ Documentation:
+  - README.md (with screenshots!)
+  - docs/images/ (6 PNG files, 616 KB)
+
+✅ Configuration:
+  - setup.py
+  - requirements.txt
+  - requirements-dev.txt
+  - pytest.ini
+  - config/config.yaml
+  - .gitignore
+  - .env.example
+
+❌ WILL NOT BE PUSHED (in .gitignore):
+  - venv/ (~200 MB virtual environment)
+  - results/ (backtest outputs)
+  - screenshots/ (original screenshots)
+  - __pycache__/ (Python cache)
+  - .coverage, htmlcov/ (test coverage)
+  - test_results/
+  - *.log files
+
+═══════════════════════════════════════════════════════════════

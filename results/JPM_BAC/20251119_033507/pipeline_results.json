@@ -1,0 +1,47 @@
+{
+  "pipeline_parameters": {
+    "tickers": [
+      "JPM",
+      "BAC"
+    ],
+    "start_date": "2022-01-01",
+    "end_date": "2023-01-01",
+    "optimized": false
+  },
+  "strategy_parameters": {
+    "entry_threshold": 2.0,
+    "exit_threshold": 0.5,
+    "stop_loss": 4.0,
+    "lookback_window": 252,
+    "position_size": 0.2,
+    "min_holding_period": 5
+  },
+  "cointegration": {
+    "is_cointegrated": false,
+    "rank": 0,
+    "weights": [
+      1.0,
+      -1.0
+    ],
+    "half_life_days": null,
+    "is_stationary": true
+  },
+  "performance_metrics": {
+    "total_return": -0.001483638999300152,
+    "annualized_return": -0.0014746419763571605,
+    "sharpe_ratio": -0.26958690692457715,
+    "sortino_ratio": -0.24869993338638827,
+    "max_drawdown": -0.0020520369874953426,
+    "calmar_ratio": -0.7186234874630921,
+    "win_rate": 0.19123505976095617,
+    "profit_factor": 0.9346990160282562,
+    "num_trades": 95
+  },
+  "risk_metrics": {
+    "var_95": 0.0006386803401226542,
+    "var_95_es": 0.0009712558223422369,
+    "var_99": 0.001261013888106399,
+    "var_99_es": 0.0014380789396962375
+  },
+  "transaction_costs": 185.95509026813505
+}
