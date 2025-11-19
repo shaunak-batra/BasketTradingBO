@@ -1101,13 +1101,7 @@ Contributions are welcome. Please:
 
 This software is for educational and research purposes only. It is not financial advice. Trading involves risk, and you can lose money. The authors are not responsible for any financial losses incurred through use of this software. Always perform thorough backtesting and paper trading before deploying real capital.
 
----
 
-## Contact
-
-For questions or collaboration:
-- Email: research@quantitative-trading.example
-- GitHub Issues: https://github.com/yourusername/BasketTradingBO/issues
 
 ---
 
