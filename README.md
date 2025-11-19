@@ -589,10 +589,11 @@ With 416 trades over 3 years, the strategy turned over frequently (averaging 2-3
 
 ### Prerequisites
 
-- Python 3.8+
-- pip
+- Python 3.8+ (Python 3.9 or 3.10 recommended)
+- pip (Python package installer)
+- Git
 
-### Steps
+### Quick Start Installation
 
 1. **Clone the repository**:
    ```bash
@@ -600,81 +601,287 @@ With 416 trades over 3 years, the strategy turned over frequently (averaging 2-3
    cd BasketTradingBO
    ```
 
-2. **Create virtual environment**:
+2. **Create and activate virtual environment** (recommended):
+
+   **On Linux/macOS**:
    ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   python3 -m venv venv
+   source venv/bin/activate
    ```
 
-3. **Install dependencies**:
+   **On Windows**:
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+
+3. **Upgrade pip** (important for compatibility):
+   ```bash
+   pip install --upgrade pip
+   ```
+
+4. **Install requirements**:
+
+   **Option A: Using requirements.txt (Recommended)**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+   **Option B: Using setup.py**:
    ```bash
    pip install -e .
    ```
 
-   Or for development with additional tools:
+5. **Verify installation**:
    ```bash
-   pip install -e ".[dev]"
+   python -c "import src; print('Installation successful!')"
    ```
 
-### Dependencies
+### Development Installation
 
-Core dependencies (see `setup.py`):
-- **Data**: `yfinance`, `pandas-datareader`, `pandas`, `numpy`
-- **Statistics**: `statsmodels`, `scipy`, `scikit-learn`
-- **Optimization**: `scikit-optimize`
-- **Visualization**: `matplotlib`, `seaborn`, `plotly`
-- **Storage**: `tables` (HDF5), `pyarrow` (Parquet)
-- **Testing**: `pytest`, `hypothesis`
+For developers who want to contribute or modify the code:
+
+1. **Install development dependencies**:
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
+   This includes additional tools:
+   - Code formatters: `black`, `isort`
+   - Linters: `flake8`
+   - Type checking: `mypy`
+   - Documentation: `sphinx`
+   - Interactive tools: `jupyter`, `ipython`
+
+2. **Install pre-commit hooks** (optional but recommended):
+   ```bash
+   pip install pre-commit
+   pre-commit install
+   ```
+
+3. **Run tests to verify setup**:
+   ```bash
+   pytest tests/ -v
+   ```
+
+### Dependencies Overview
+
+Core dependencies (see `requirements.txt` for specific versions):
+
+**Data Science & Computation**:
+- `numpy>=1.24.3` - Numerical computing
+- `pandas>=2.0.3` - Data manipulation and analysis
+- `scipy>=1.11.2` - Scientific computing and statistics
+
+**Statistical Analysis**:
+- `statsmodels>=0.14.0` - Econometric tests (Johansen, ADF, VECM)
+
+**Machine Learning**:
+- `scikit-learn>=1.3.0` - ML algorithms and preprocessing
+- `scikit-optimize>=0.9.0` - Bayesian optimization
+
+**Market Data**:
+- `yfinance>=0.2.28` - Yahoo Finance data downloader
+- `pandas-datareader>=0.10.0` - Alternative data sources
+
+**Data Storage**:
+- `tables>=3.8.0` - HDF5 file support
+- `pyarrow>=13.0.0` - Parquet file support
+
+**Visualization**:
+- `matplotlib>=3.7.2` - Plotting library
+- `seaborn>=0.12.2` - Statistical visualizations
+- `plotly>=5.17.0` - Interactive plots
+
+**Configuration & Utilities**:
+- `pyyaml>=6.0.1` - YAML configuration files
+- `python-dotenv>=1.0.0` - Environment variable management
+- `tqdm>=4.66.1` - Progress bars
+- `joblib>=1.3.2` - Parallel processing
+
+**Testing**:
+- `pytest>=7.4.2` - Testing framework
+- `pytest-cov>=4.1.0` - Code coverage
+- `hypothesis>=6.88.1` - Property-based testing
+
+### Troubleshooting Installation
+
+**Issue: `tables` installation fails on Windows**
+```bash
+# Solution: Install HDF5 binaries first
+pip install tables --only-binary :all:
+# Or skip HDF5 caching (use Parquet instead)
+pip install -r requirements.txt --no-deps
+pip install tables || echo "Skipping tables, will use Parquet caching"
+```
+
+**Issue: `scikit-optimize` installation fails**
+```bash
+# Solution: Install from conda-forge
+conda install -c conda-forge scikit-optimize
+```
+
+**Issue: Memory errors during data fetching**
+```bash
+# Solution: Increase available memory or reduce date range
+# Edit config/config.yaml to reduce lookback_window
+```
+
+**Issue: Import errors after installation**
+```bash
+# Solution: Ensure virtual environment is activated
+source venv/bin/activate  # Linux/macOS
+venv\Scripts\activate     # Windows
+
+# Verify Python is using the venv
+which python  # Should show path to venv
+pip list      # Verify packages are installed
+```
 
 ---
 
 ## Usage
 
+### Quick Start Example
+
+Get started in 3 simple steps:
+
+```bash
+# 1. Activate your virtual environment
+source venv/bin/activate
+
+# 2. Run the pipeline with default parameters (bank stocks example)
+python scripts/run_pipeline.py \
+    --tickers JPM BAC GS \
+    --start 2020-01-01 \
+    --end 2023-12-31
+
+# 3. View the HTML report (opens in your browser)
+open results/JPM_BAC_GS/*/backtest_report.html  # macOS
+xdg-open results/JPM_BAC_GS/*/backtest_report.html  # Linux
+start results/JPM_BAC_GS/*/backtest_report.html  # Windows
+```
+
+That's it! The pipeline will automatically:
+- Download price data from Yahoo Finance
+- Test for cointegration using Johansen test
+- Calculate the optimal spread and z-scores
+- Generate trading signals
+- Run a complete backtest with transaction costs
+- Create an interactive HTML report with visualizations
+
 ### Basic Workflow
 
-1. **Run Complete Pipeline**:
+#### 1. Run Complete Pipeline
 
-   ```bash
-   python scripts/run_pipeline.py \
-       --tickers JPM BAC GS \
-       --start 2020-01-01 \
-       --end 2023-12-31 \
-       --optimize \
-       --n-iterations 50 \
-       --output-dir results
-   ```
+**With default parameters**:
+```bash
+python scripts/run_pipeline.py \
+    --tickers JPM BAC GS \
+    --start 2020-01-01 \
+    --end 2023-12-31 \
+    --output-dir results
+```
 
-   This will:
-   - Fetch data from Yahoo Finance
-   - Test for cointegration (Johansen)
-   - Calculate spread and z-score
-   - Run Bayesian optimization (50 iterations)
-   - Backtest with optimized parameters
-   - Generate HTML report with plots
+**With Bayesian optimization** (recommended for best results):
+```bash
+python scripts/run_pipeline.py \
+    --tickers JPM BAC GS \
+    --start 2020-01-01 \
+    --end 2023-12-31 \
+    --optimize \
+    --n-iterations 50 \
+    --output-dir results
+```
 
-2. **View Results**:
+**Command-line arguments**:
+- `--tickers`: Space-separated list of ticker symbols (minimum 2)
+- `--start`: Start date in YYYY-MM-DD format
+- `--end`: End date in YYYY-MM-DD format
+- `--optimize`: Enable Bayesian optimization (optional)
+- `--n-iterations`: Number of optimization iterations (default: 50)
+- `--output-dir`: Output directory for results (default: results)
+- `--no-report`: Skip HTML report generation (optional)
 
-   Results are saved in `results/JPM_BAC_GS/YYYYMMDD_HHMMSS/`:
-   - `backtest_report.html`: Interactive HTML report
-   - `pipeline_results.json`: All metrics in JSON format
-   - `plots/`: Individual plot files
-   - `correlation_matrix.png`: Asset correlation heatmap
-   - `var_distribution.png`: VaR distribution plot
+**What the pipeline does**:
+1. Fetch historical price data from Yahoo Finance
+2. Test for cointegration using Johansen trace test
+3. Calculate spread using cointegrating vector
+4. Compute z-scores for mean reversion signals
+5. (Optional) Optimize parameters via Bayesian optimization
+6. Generate trading signals with state machine
+7. Backtest strategy with transaction costs
+8. Calculate risk metrics (VaR, CVaR, Sharpe, Sortino)
+9. Generate comprehensive HTML report with plots
 
-3. **Example Output**:
+#### 2. View Results
 
-   ```
-   ============================================================
-   BASKET TRADING PIPELINE - COMPLETED
-   ============================================================
-   Results saved to: results/JPM_BAC_GS/20251119_034828
+Results are automatically saved in an organized directory structure:
 
-   Quick Access:
-     - View Report:  start results/JPM_BAC_GS/20251119_034828/backtest_report.html
-     - View Metrics: cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json
-     - View Plots:   explorer results/JPM_BAC_GS/20251119_034828/plots
-   ============================================================
-   ```
+```
+results/JPM_BAC_GS/20251119_034828/
+├── backtest_report.html          # Main HTML report
+├── pipeline_results.json          # All metrics in JSON
+├── correlation_matrix.png         # Asset correlations
+├── var_distribution.png           # VaR analysis
+├── optimization_convergence.png   # (if --optimize used)
+└── plots/
+    ├── performance.png            # Portfolio equity curve
+    ├── spread_zscore.png          # Spread and z-score
+    └── drawdown.png               # Drawdown chart
+```
+
+**View the HTML report**:
+```bash
+# The report includes:
+# - Performance metrics (Sharpe, Sortino, max drawdown)
+# - Interactive charts (portfolio value, signals, spread)
+# - Transaction cost analysis
+# - Risk metrics (VaR, CVaR)
+# - Strategy parameters used
+
+# macOS
+open results/JPM_BAC_GS/20251119_034828/backtest_report.html
+
+# Linux
+xdg-open results/JPM_BAC_GS/20251119_034828/backtest_report.html
+
+# Windows
+start results/JPM_BAC_GS/20251119_034828/backtest_report.html
+```
+
+**View JSON results**:
+```bash
+# View in terminal with jq (install: brew install jq)
+cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json | jq
+
+# View performance metrics only
+cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json | jq '.performance_metrics'
+```
+
+#### 3. Example Output
+
+When the pipeline completes successfully, you'll see:
+
+```
+============================================================
+BASKET TRADING PIPELINE - COMPLETED
+============================================================
+Results saved to: results/JPM_BAC_GS/20251119_034828
+
+Quick Access:
+  - View Report:  start results/JPM_BAC_GS/20251119_034828/backtest_report.html
+  - View Metrics: cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json
+  - View Plots:   explorer results/JPM_BAC_GS/20251119_034828/plots
+============================================================
+
+Performance Summary:
+  Sharpe Ratio:    1.23
+  Total Return:    15.4%
+  Max Drawdown:   -6.2%
+  Win Rate:        52.3%
+  Number of Trades: 142
+```
 
 ### Advanced Usage
 
