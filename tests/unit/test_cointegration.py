@@ -1,159 +1,118 @@
-"""
-Unit tests for cointegration analysis.
+"""Cointegration tests (Johansen, Engle-Granger) and spread diagnostics."""
 
-Tests cover Johansen test, ADF test, spread calculation, z-score, and half-life.
-"""
+from __future__ import annotations
+
+import math
 
 import numpy as np
 import pandas as pd
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
-from src.cointegration.engine import CointegrationEngine
-from src.cointegration.spread import SpreadCalculator, calculate_half_life, calculate_zscore
-from src.utils.exceptions import NoCointegrationException, StationarityException
-from tests.fixtures.sample_data import generate_cointegrated_prices, generate_mean_reverting_spread
+from src.cointegration.engine import _sequential_rank, engle_granger_test, johansen_test, normalize_weights
+from src.cointegration.spread import compute_spread, half_life, rolling_zscore
+from src.utils.exceptions import ConfigError, DataError
+from tests.fixtures.synthetic import ar1_process, business_days, cointegrated_prices, random_walk_prices
 
 
-class TestCointegrationEngine:
-    """Tests for CointegrationEngine class."""
+class TestJohansen:
+    def test_detects_cointegration_and_recovers_the_true_weights(self):
+        prices, true_weights = cointegrated_prices(n=1500, seed=3)
+        result = johansen_test(np.log(prices))
+        assert result.is_cointegrated
+        np.testing.assert_allclose(result.weights, normalize_weights(true_weights), atol=0.02)
 
-    @pytest.fixture
-    def engine(self):
-        """Create engine instance."""
-        return CointegrationEngine()
+    def test_false_positive_rate_on_driftless_random_walks_is_bounded(self):
+        # det_order=0 uses critical values that assume drifting prices. Without drift the nominal 5%
+        # test over-rejects (about 10-13% in simulation, see README Limitations). This pins the rate
+        # so a change in the library or the code cannot make it silently worse.
+        rejections = [
+            johansen_test(np.log(random_walk_prices(n=400, k=3, seed=seed))).is_cointegrated for seed in range(100)
+        ]
+        assert np.mean(rejections) <= 0.15
 
-    @pytest.fixture
-    def cointegrated_data(self):
-        """Create cointegrated price series."""
-        return generate_cointegrated_prices(n_days=500, cointegration_strength=0.9, seed=42)
+    def test_false_positive_rate_is_near_nominal_when_prices_drift(self):
+        rejections = [
+            johansen_test(np.log(random_walk_prices(n=504, k=2, drift=0.002, seed=seed))).is_cointegrated
+            for seed in range(100)
+        ]
+        assert np.mean(rejections) <= 0.10
 
-    @pytest.fixture
-    def non_cointegrated_data(self):
-        """Create non-cointegrated price series."""
-        np.random.seed(42)
-        dates = pd.date_range('2020-01-01', periods=100, freq='D')
-        data = pd.DataFrame({
-            'X': 100 + np.cumsum(np.random.randn(100)),
-            'Y': 200 + np.cumsum(np.random.randn(100))
-        }, index=dates)
-        return data
-
-    def test_cointegration_detected(self, engine, cointegrated_data):
-        """Test that cointegration is detected in cointegrated series."""
-        result = engine.test_cointegration(cointegrated_data)
-
-        assert result.is_cointegrated is True
-        assert result.cointegrating_rank >= 1
-        assert result.eigenvectors is not None
-        assert result.eigenvalues is not None
-
-    def test_cointegration_not_detected_raises(self, engine, non_cointegrated_data):
-        """Test that NoCointegrationException is raised for non-cointegrated series."""
-        with pytest.raises(NoCointegrationException):
-            engine.test_cointegration(non_cointegrated_data)
-
-    def test_calculate_spread(self, engine, cointegrated_data):
-        """Test spread calculation."""
-        weights = np.array([1.0, -0.5])
-        spread = engine.calculate_spread(cointegrated_data, weights)
-
-        assert isinstance(spread, pd.Series)
-        assert len(spread) == len(cointegrated_data)
-        assert not spread.isnull().any()
-
-    def test_stationarity_test_stationary(self, engine):
-        """Test stationarity test on stationary series."""
-        # Generate stationary series
-        mean_reverting = generate_mean_reverting_spread(n_days=500, half_life=20, seed=42)
-
-        result = engine.test_stationarity(mean_reverting)
-
-        assert result.is_stationary is True
+    def test_engle_granger_agrees_on_a_strongly_cointegrated_basket(self):
+        prices, _ = cointegrated_prices(n=1500, seed=3)
+        result = engle_granger_test(np.log(prices))
+        assert result.rejects_at_5pct
         assert result.p_value < 0.05
-        assert result.test_statistic < result.critical_values["5%"]
 
-    def test_stationarity_test_non_stationary_raises(self, engine):
-        """Test that StationarityException is raised for non-stationary series."""
-        # Generate random walk (non-stationary)
-        np.random.seed(42)
-        dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        random_walk = pd.Series(np.cumsum(np.random.randn(500)), index=dates)
+    def test_rank_counts_consecutive_rejections_only(self):
+        assert _sequential_rank(np.array([30.0, 10.0, 20.0]), np.array([29.0, 15.0, 3.0])) == 1
+        assert _sequential_rank(np.array([10.0, 30.0]), np.array([15.0, 3.0])) == 0
 
-        with pytest.raises(StationarityException):
-            engine.test_stationarity(random_walk)
+    def test_weight_normalisation_convention(self):
+        np.testing.assert_allclose(normalize_weights([-2.0, 1.0]), [2 / 3, -1 / 3])
+        np.testing.assert_allclose(normalize_weights([0.0, -3.0, 1.0]), [0.0, 0.75, -0.25])
+        with pytest.raises(ValueError):
+            normalize_weights([0.0, 0.0])
 
-
-class TestSpreadCalculator:
-    """Tests for SpreadCalculator class."""
-
-    @pytest.fixture
-    def calculator(self):
-        """Create calculator instance."""
-        return SpreadCalculator()
-
-    @pytest.fixture
-    def mean_reverting_spread(self):
-        """Create mean reverting spread."""
-        return generate_mean_reverting_spread(n_days=500, half_life=20, seed=42)
-
-    def test_calculate_zscore(self, calculator, mean_reverting_spread):
-        """Test z-score calculation."""
-        zscore = calculator.calculate_zscore(mean_reverting_spread, lookback=252)
-
-        assert isinstance(zscore, pd.Series)
-        assert len(zscore) == len(mean_reverting_spread)
-        # Z-score should have approximately mean=0 and std=1
-        assert abs(zscore.mean()) < 0.5
-        assert abs(zscore.std() - 1.0) < 0.5
-
-    def test_calculate_half_life(self, calculator, mean_reverting_spread):
-        """Test half-life calculation."""
-        half_life = calculator.calculate_half_life(mean_reverting_spread)
-
-        # Should be a positive number
-        assert half_life > 0
-        # Should be in reasonable range (generated with half_life=20)
-        assert 5 < half_life < 60
-
-    def test_calculate_half_life_no_mean_reversion(self, calculator):
-        """Test half-life calculation with non-mean-reverting series."""
-        # Generate random walk
-        np.random.seed(42)
-        dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        random_walk = pd.Series(np.cumsum(np.random.randn(500)), index=dates)
-
-        with pytest.raises(ValueError, match="No mean reversion detected"):
-            calculator.calculate_half_life(random_walk)
-
-    def test_calculate_hurst_exponent(self, calculator, mean_reverting_spread):
-        """Test Hurst exponent calculation."""
-        hurst = calculator.calculate_hurst_exponent(mean_reverting_spread)
-
-        # Should be between 0 and 1
-        assert 0 < hurst < 1
-        # Mean reverting should have H < 0.5
-        assert hurst < 0.5
+    def test_invalid_inputs_are_rejected(self):
+        prices, _ = cointegrated_prices(n=200, seed=1)
+        logs = np.log(prices)
+        with pytest.raises(ConfigError):
+            johansen_test(logs, significance=0.02)
+        with pytest.raises(ConfigError):
+            johansen_test(logs, det_order=2)
+        with pytest.raises(DataError):
+            johansen_test(logs.iloc[:, :1])
+        with pytest.raises(DataError):
+            johansen_test(logs.iloc[:30])
+        broken = logs.copy()
+        broken.iloc[5, 0] = np.nan
+        with pytest.raises(DataError):
+            johansen_test(broken)
 
 
-class TestStandaloneFunctions:
-    """Tests for standalone utility functions."""
+class TestSpread:
+    def test_spread_is_the_weighted_sum_of_log_prices(self):
+        prices = pd.DataFrame({"A": [100.0, 110.0], "B": [50.0, 40.0]}, index=business_days(2))
+        spread = compute_spread(prices, [0.5, -0.5])
+        np.testing.assert_allclose(spread.to_numpy(), 0.5 * np.log(prices["A"]) - 0.5 * np.log(prices["B"]))
 
-    def test_calculate_zscore_function(self):
-        """Test standalone calculate_zscore function."""
-        spread = pd.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-        zscore = calculate_zscore(spread, lookback=5)
+    def test_zscore_has_no_partial_windows_and_matches_a_manual_calculation(self):
+        spread = pd.Series(ar1_process(50, half_life=5, sigma=1.0, seed=2), index=business_days(50))
+        z = rolling_zscore(spread, 10)
+        assert z.iloc[:9].isna().all()
+        window = spread.iloc[20:30]
+        assert z.iloc[29] == pytest.approx((spread.iloc[29] - window.mean()) / window.std(ddof=1), rel=1e-12)
 
-        assert isinstance(zscore, pd.Series)
-        assert len(zscore) == len(spread)
+    def test_zscore_is_nan_for_windows_without_variance(self):
+        assert rolling_zscore(pd.Series(np.full(30, 3.0), index=business_days(30)), 10).isna().all()
 
-        # Last value should be normalized
-        expected = (10 - 8) / np.std([6, 7, 8, 9, 10], ddof=1)
-        assert abs(zscore.iloc[-1] - expected) < 0.01
+    @settings(max_examples=100, deadline=None)
+    @given(st.lists(st.floats(-5, 5), min_size=12, max_size=80), st.data())
+    def test_zscore_is_causal(self, values, data):
+        cut = data.draw(st.integers(0, len(values) - 2))
+        tail = data.draw(st.lists(st.floats(-5, 5), min_size=len(values) - cut - 1, max_size=len(values) - cut - 1))
+        index = business_days(len(values))
+        base = rolling_zscore(pd.Series(values, index=index), 10).to_numpy()
+        altered = rolling_zscore(pd.Series(values[: cut + 1] + tail, index=index), 10).to_numpy()
+        np.testing.assert_allclose(altered[: cut + 1], base[: cut + 1], rtol=1e-12, atol=1e-12)
 
-    def test_calculate_half_life_function(self):
-        """Test standalone calculate_half_life function."""
-        spread = generate_mean_reverting_spread(n_days=500, half_life=25, seed=42)
-        half_life = calculate_half_life(spread)
 
-        assert half_life > 0
-        assert 5 < half_life < 60
+class TestHalfLife:
+    def test_recovers_the_half_life_of_an_ar1_process(self):
+        assert half_life(ar1_process(20_000, half_life=10.0, sigma=1.0, seed=1)) == pytest.approx(10.0, rel=0.1)
+
+    def test_is_infinite_for_an_explosive_series(self):
+        rng = np.random.default_rng(0)
+        values = np.empty(300)
+        values[0] = 1.0
+        for t in range(1, 300):
+            values[t] = 1.01 * values[t - 1] + 0.1 * rng.standard_normal()
+        assert half_life(values) == math.inf
+
+    def test_needs_twenty_finite_observations(self):
+        with pytest.raises(ValueError):
+            half_life(np.arange(10.0))
+        with pytest.raises(ValueError):
+            half_life(np.r_[np.arange(30.0), np.nan])

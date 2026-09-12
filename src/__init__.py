@@ -1,3 +1,3 @@
-"""Basket Trading with Bayesian Optimization - Core Package"""
+"""Walk-forward research framework for cointegration basket trading."""
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"

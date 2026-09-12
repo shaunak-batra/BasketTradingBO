@@ -1,232 +1,128 @@
-"""
-Unit tests for market data adapter.
+"""Price alignment, validation and snapshot tests (no network)."""
 
-Tests cover data fetching, validation, and saving functionality.
-"""
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.data.market_data import DataValidator, MarketDataAdapter, ValidationReport
-from src.utils.exceptions import DataQualityException
+from src.data.market_data import _extract_close, align_prices, load_prices, suspicious_moves, validate_prices
+from src.utils.exceptions import DataError
 
 
-class TestDataValidator:
-    """Tests for DataValidator class."""
-
-    @pytest.fixture
-    def validator(self):
-        """Create validator instance."""
-        return DataValidator()
-
-    @pytest.fixture
-    def clean_data(self):
-        """Create clean test data."""
-        dates = pd.date_range('2020-01-01', periods=100, freq='D')
-        np.random.seed(42)
-        data = pd.DataFrame({
-            'AAPL': 100 + np.cumsum(np.random.randn(100) * 0.5),
-            'MSFT': 200 + np.cumsum(np.random.randn(100) * 0.5)
-        }, index=dates)
-        return data
-
-    @pytest.fixture
-    def data_with_missing(self):
-        """Create data with missing values."""
-        dates = pd.date_range('2020-01-01', periods=100, freq='D')
-        np.random.seed(42)
-        data = pd.DataFrame({
-            'AAPL': 100 + np.cumsum(np.random.randn(100) * 0.5),
-            'MSFT': 200 + np.cumsum(np.random.randn(100) * 0.5)
-        }, index=dates)
-        # Add missing values
-        data.iloc[10:15, 0] = np.nan
-        return data
-
-    def test_check_missing_values_clean(self, validator, clean_data):
-        """Test missing value check with clean data."""
-        is_valid, ratio = validator.check_missing_values(clean_data)
-        assert is_valid is True
-        assert ratio == 0.0
-
-    def test_check_missing_values_with_missing(self, validator, data_with_missing):
-        """Test missing value check with missing data."""
-        is_valid, ratio = validator.check_missing_values(data_with_missing)
-        # 5 missing out of 200 total = 2.5%
-        assert ratio == 0.025
-        assert is_valid is True  # Under 5% threshold
-
-    def test_detect_outliers(self, validator, clean_data):
-        """Test outlier detection."""
-        outliers, count = validator.detect_outliers(clean_data)
-        assert isinstance(outliers, pd.DataFrame)
-        assert count >= 0
-
-    def test_check_price_continuity(self, validator, clean_data):
-        """Test price continuity check."""
-        discontinuities = validator.check_price_continuity(clean_data)
-        assert isinstance(discontinuities, list)
-        # Clean data should have no major discontinuities
-        assert len(discontinuities) == 0
-
-    def test_validate_clean_data(self, validator, clean_data):
-        """Test full validation on clean data."""
-        report = validator.validate(clean_data)
-        assert isinstance(report, ValidationReport)
-        assert report.is_valid is True
-        assert report.missing_ratio == 0.0
-        assert len(report.errors) == 0
-
-    def test_validate_data_with_issues(self, validator):
-        """Test validation with data quality issues."""
-        # Create data with excessive missing values
-        dates = pd.date_range('2020-01-01', periods=100, freq='D')
-        data = pd.DataFrame({
-            'AAPL': [np.nan] * 50 + list(range(50)),
-            'MSFT': list(range(100))
-        }, index=dates)
-
-        report = validator.validate(data)
-        assert report.is_valid is False
-        assert report.missing_ratio > 0.05
-        assert len(report.errors) > 0
+def series(values, name: str, start: str = "2020-01-01") -> pd.Series:
+    return pd.Series(np.asarray(values, dtype=float), index=pd.bdate_range(start, periods=len(values)), name=name)
 
 
-class TestFeatures:
-    """Tests for feature engineering."""
-
-    @pytest.fixture
-    def sample_prices(self):
-        """Create sample price data."""
-        dates = pd.date_range('2020-01-01', periods=100, freq='D')
-        np.random.seed(42)
-        data = pd.DataFrame({
-            'AAPL': 100 * np.exp(np.cumsum(np.random.randn(100) * 0.01)),
-            'MSFT': 200 * np.exp(np.cumsum(np.random.randn(100) * 0.01))
-        }, index=dates)
-        return data
-
-    def test_calculate_log_prices(self, sample_prices):
-        """Test log price calculation."""
-        from src.data.features import calculate_log_prices
-
-        log_prices = calculate_log_prices(sample_prices)
-        assert log_prices.shape == sample_prices.shape
-        assert not log_prices.isnull().any().any()
-        # Log prices should be roughly log(100) ≈ 4.6 for AAPL
-        assert 4.0 < log_prices['AAPL'].mean() < 5.5
-
-    def test_calculate_returns_log(self, sample_prices):
-        """Test log return calculation."""
-        from src.data.features import calculate_returns
-
-        returns = calculate_returns(sample_prices, method='log')
-        assert returns.shape == sample_prices.shape
-        # First value should be NaN
-        assert returns.iloc[0].isnull().all()
-        # Returns should be small (around 1%)
-        assert abs(returns['AAPL'].mean()) < 0.05
-
-    def test_calculate_returns_simple(self, sample_prices):
-        """Test simple return calculation."""
-        from src.data.features import calculate_returns
-
-        returns = calculate_returns(sample_prices, method='simple')
-        assert returns.shape == sample_prices.shape
-        # First value should be NaN
-        assert returns.iloc[0].isnull().all()
-
-    def test_create_spread(self, sample_prices):
-        """Test spread creation."""
-        from src.data.features import create_spread
-
-        weights = np.array([1.0, -0.5])
-        spread = create_spread(sample_prices, weights)
-
-        assert isinstance(spread, pd.Series)
-        assert len(spread) == len(sample_prices)
-        assert not spread.isnull().any()
-
-    def test_create_spread_wrong_weights(self, sample_prices):
-        """Test spread creation with wrong number of weights."""
-        from src.data.features import create_spread
-
-        weights = np.array([1.0])  # Only 1 weight for 2 columns
-
-        with pytest.raises(ValueError):
-            create_spread(sample_prices, weights)
+def random_series(ticker: str, seed: int, n: int = 300) -> pd.Series:
+    rng = np.random.default_rng(seed)
+    return series(100.0 * np.exp(np.cumsum(rng.normal(0.0, 0.01, n))), ticker)
 
 
-class TestCacheManager:
-    """Tests for CacheManager class."""
+class TestAlign:
+    def test_dates_missing_in_any_ticker_are_dropped_not_filled(self):
+        a = series(range(1, 101), "A")
+        b = series(range(1, 101), "B").drop(pd.bdate_range("2020-01-01", periods=100)[10])
+        prices, dropped = align_prices([a, b], max_missing_fraction=0.02)
+        assert dropped == 1
+        assert len(prices) == 99
+        assert not prices.isna().any().any()
 
-    @pytest.fixture
-    def cache_manager(self, tmp_path):
-        """Create cache manager with temporary directory."""
-        from src.data.cache import CacheManager
-        from src.utils.config import ConfigManager
+    def test_a_ticker_that_starts_late_is_rejected_with_its_first_date(self):
+        a = series(range(1, 101), "A")
+        b = series(range(1, 51), "B", start=str(a.index[50].date()))
+        with pytest.raises(DataError, match="First available date"):
+            align_prices([a, b], max_missing_fraction=0.02)
 
-        # Create temporary config
-        config = ConfigManager({
-            'data': {
-                'storage': {
-                    'raw_data_path': str(tmp_path / 'cache'),
-                    'cache_ttl': 3600
-                }
-            }
-        })
+    def test_duplicate_tickers_are_rejected(self):
+        with pytest.raises(DataError):
+            align_prices([series([1, 2], "A"), series([1, 2], "A")], max_missing_fraction=0.02)
 
-        return CacheManager(config)
 
-    @pytest.fixture
-    def sample_df(self):
-        """Create sample DataFrame."""
-        dates = pd.date_range('2020-01-01', periods=10, freq='D')
-        return pd.DataFrame({
-            'AAPL': range(10),
-            'MSFT': range(10, 20)
-        }, index=dates)
+class TestValidate:
+    def setup_method(self):
+        self.prices = pd.DataFrame({"A": [1.0, 2.0, 3.0], "B": [3.0, 2.0, 1.0]}, index=pd.bdate_range("2020-01-01", periods=3))
 
-    def test_set_and_get(self, cache_manager, sample_df):
-        """Test setting and getting cache values."""
-        key = "test_key"
-        cache_manager.set(key, sample_df)
+    def test_clean_prices_pass(self):
+        assert validate_prices(self.prices) is self.prices
 
-        retrieved = cache_manager.get(key)
-        assert retrieved is not None
-        pd.testing.assert_frame_equal(retrieved, sample_df)
+    @pytest.mark.parametrize("value", [np.nan, 0.0, -1.0, np.inf])
+    def test_bad_values_are_rejected(self, value):
+        prices = self.prices.copy()
+        prices.iloc[1, 0] = value
+        with pytest.raises(DataError):
+            validate_prices(prices)
 
-    def test_get_nonexistent(self, cache_manager):
-        """Test getting nonexistent key."""
-        result = cache_manager.get("nonexistent_key")
-        assert result is None
+    def test_unsorted_dates_and_single_columns_are_rejected(self):
+        with pytest.raises(DataError):
+            validate_prices(self.prices.iloc[::-1])
+        with pytest.raises(DataError):
+            validate_prices(self.prices[["A"]])
 
-    def test_invalidate(self, cache_manager, sample_df):
-        """Test cache invalidation."""
-        key = "test_key_123"
-        cache_manager.set(key, sample_df)
 
-        # Verify it's cached
-        assert cache_manager.get(key) is not None
+class TestExtractClose:
+    def test_multiindex_columns_and_timezones_keep_the_trading_date(self):
+        index = pd.DatetimeIndex(["2020-01-02", "2020-01-03"], tz="Asia/Tokyo")
+        columns = pd.MultiIndex.from_tuples([("Close", "AAA"), ("Open", "AAA")], names=["Price", "Ticker"])
+        raw = pd.DataFrame([[1.0, 2.0], [1.5, 2.5]], index=index, columns=columns)
+        close = _extract_close(raw, "AAA")
+        assert close.name == "AAA"
+        assert close.index.tz is None
+        assert [str(date.date()) for date in close.index] == ["2020-01-02", "2020-01-03"]
+        assert close.tolist() == [1.0, 1.5]
 
-        # Invalidate
-        count = cache_manager.invalidate(key)
-        assert count == 1
+    def test_flat_columns(self):
+        raw = pd.DataFrame({"Open": [1.0], "Close": [2.0]}, index=pd.DatetimeIndex(["2020-01-02"]))
+        assert _extract_close(raw, "AAA").tolist() == [2.0]
 
-        # Verify it's gone
-        assert cache_manager.get(key) is None
 
-    def test_get_stats(self, cache_manager, sample_df):
-        """Test cache statistics."""
-        cache_manager.set("key1", sample_df)
-        cache_manager.set("key2", sample_df)
+class TestSnapshots:
+    def test_second_load_uses_the_snapshot_and_reproduces_identical_data(self, tmp_path):
+        calls = []
 
-        cache_manager.get("key1")  # Hit
-        cache_manager.get("nonexistent")  # Miss
+        def downloader(ticker, start, end):
+            calls.append(ticker)
+            return random_series(ticker, seed=len(calls))
 
-        stats = cache_manager.get_stats()
-        assert stats.hits == 1
-        assert stats.misses == 1
-        assert 0 < stats.hit_rate < 1
-        assert stats.total_entries >= 2
+        first = load_prices(["AAA", "BBB"], "2020-01-01", "2021-03-01", tmp_path, downloader=downloader)
+
+        def offline(*_):
+            raise AssertionError("the snapshot should have been used")
+
+        second = load_prices(["AAA", "BBB"], "2020-01-01", "2021-03-01", tmp_path, downloader=offline)
+        assert (first.source, second.source) == ("download", "snapshot")
+        pd.testing.assert_frame_equal(first.prices, second.prices, check_exact=True)
+        assert first.sha256 == second.sha256
+        assert calls == ["AAA", "BBB"]
+        assert b"\r\n" not in first.path.read_bytes()
+
+    def test_refresh_downloads_again(self, tmp_path):
+        calls = []
+
+        def downloader(ticker, start, end):
+            calls.append(ticker)
+            return random_series(ticker, seed=1)
+
+        load_prices(["AAA", "BBB"], "2020-01-01", "2021-03-01", tmp_path, downloader=downloader)
+        load_prices(["AAA", "BBB"], "2020-01-01", "2021-03-01", tmp_path, refresh=True, downloader=downloader)
+        assert len(calls) == 4
+
+    def test_snapshot_with_different_columns_is_rejected(self, tmp_path):
+        load_prices(["AAA", "BBB"], "2020-01-01", "2021-03-01", tmp_path, downloader=lambda t, s, e: random_series(t, 1))
+        path = tmp_path / "AAA_BBB_2020-01-01_2021-03-01.csv"
+        frame = pd.read_csv(path, index_col=0)
+        frame.columns = ["AAA", "ZZZ"]
+        frame.to_csv(path)
+        with pytest.raises(DataError):
+            load_prices(["AAA", "BBB"], "2020-01-01", "2021-03-01", tmp_path, downloader=lambda t, s, e: random_series(t, 1))
+
+    def test_fewer_than_two_distinct_tickers_are_rejected(self, tmp_path):
+        with pytest.raises(DataError):
+            load_prices(["AAA", "AAA"], "2020-01-01", "2021-01-01", tmp_path)
+
+
+def test_suspicious_moves_flags_large_daily_jumps():
+    prices = pd.DataFrame({"A": [100.0, 101.0, 180.0], "B": [50.0, 50.5, 51.0]}, index=pd.bdate_range("2020-01-01", periods=3))
+    moves = suspicious_moves(prices)
+    assert len(moves) == 1
+    assert moves[0]["ticker"] == "A"

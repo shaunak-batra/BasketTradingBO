@@ -1,283 +1,139 @@
-"""
-Module: Signal Generator
+"""Z-score state machine that turns a spread z-score into target positions.
 
-Generate trading signals based on mean reversion logic using z-score thresholds.
-Implements state machine for position management.
+States are +1 (long the spread), -1 (short the spread) and 0 (flat). The state at
+bar t uses only information available at the close of bar t. The backtester fills
+it ``execution_lag`` bars later, so a signal never trades on the price that
+produced it.
 
-Classes
--------
-SignalGenerator
-    Main interface for signal generation
+Rules (all thresholds inclusive, in z-score units):
 
-Functions
----------
-generate_signals
-    Generate mean reversion trading signals
+    flat  -> long    when -stop_z < z <= -entry_z
+    flat  -> short   when  entry_z <= z < stop_z
+    long  -> flat    when z >= -exit_z   (spread reverted)   or  z <= -stop_z (stop-loss)
+    short -> flat    when z <=  exit_z   (spread reverted)   or  z >=  stop_z (stop-loss)
 
-Notes
------
-Signal Logic (State Machine):
-    IDLE → LONG:   zscore < -entry_threshold (spread oversold)
-    IDLE → SHORT:  zscore > entry_threshold (spread overbought)
-    LONG → IDLE:   zscore > -exit_threshold OR zscore < -stop_loss
-    SHORT → IDLE:  zscore < exit_threshold OR zscore > stop_loss
-
-Author: Quantitative Research Team
-Created: 2025-01-18
+After a stop-loss, or when |z| is already beyond ``stop_z`` while flat, the machine
+is disarmed until |z| < entry_z. That prevents re-entering a spread that is still
+diverging on the very next bar. A NaN z-score (warm-up or zero variance) never
+opens a position and leaves an open position unchanged.
 """
 
-from typing import Dict, Optional
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from src.utils.config import ConfigManager
-from src.utils.exceptions import SignalGenerationException
-from src.utils.logger import StructuredLogger, timed_execution
+from src.utils.exceptions import ConfigError
+
+ENTRY = "entry"
+EXIT = "exit"
+STOP = "stop"
 
 
-class SignalGenerator:
-    """
-    Generate trading signals based on mean reversion logic.
+def _is_real_number(value: object) -> bool:
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, (bool, np.bool_))
 
-    Attributes
-    ----------
-    entry_threshold : float
-        Z-score threshold for trade entry
-    exit_threshold : float
-        Z-score threshold for trade exit
-    stop_loss : float
-        Z-score threshold for stop loss
-    position_limits : Dict[str, float]
-        Position size limits
 
-    Methods
-    -------
-    generate_signals(zscore)
-        Generate trading signals from z-score
-    get_current_position()
-        Get current position state
+@dataclass(frozen=True)
+class SignalParams:
+    """Signal thresholds (z units) and the rolling z-score window (bars)."""
 
-    Examples
-    --------
-    >>> generator = SignalGenerator(entry_threshold=2.0, exit_threshold=0.5)
-    >>> signals = generator.generate_signals(zscore)
-    """
+    entry_z: float = 2.0
+    exit_z: float = 0.5
+    stop_z: float = 4.0
+    lookback: int = 60
 
-    def __init__(
-        self,
-        entry_threshold: float = 2.0,
-        exit_threshold: float = 0.5,
-        stop_loss: float = 4.0,
-        position_limits: Optional[Dict[str, float]] = None
-    ):
+    def __post_init__(self) -> None:
+        for name in ("entry_z", "exit_z", "stop_z"):
+            value = getattr(self, name)
+            if not _is_real_number(value) or not math.isfinite(value):
+                raise ConfigError(f"{name} must be a finite number, got {value!r}")
+        if not isinstance(self.lookback, (int, np.integer)) or isinstance(self.lookback, (bool, np.bool_)):
+            raise ConfigError(f"lookback must be an integer, got {self.lookback!r}")
+        if self.lookback < 2:
+            raise ConfigError(f"lookback must be >= 2, got {self.lookback}")
+        if self.entry_z <= 0:
+            raise ConfigError(f"entry_z must be > 0, got {self.entry_z}")
+        if not 0 <= self.exit_z < self.entry_z:
+            raise ConfigError(f"exit_z must satisfy 0 <= exit_z < entry_z, got exit_z={self.exit_z}, entry_z={self.entry_z}")
+        if self.stop_z <= self.entry_z:
+            raise ConfigError(f"stop_z must be > entry_z, got stop_z={self.stop_z}, entry_z={self.entry_z}")
+
+    @classmethod
+    def from_search_space(
+        cls, entry_z: float, exit_fraction: float, stop_offset: float, lookback: int
+    ) -> "SignalParams":
+        """Map the optimizer's unconstrained box to valid thresholds.
+
+        ``exit_z = exit_fraction * entry_z`` and ``stop_z = entry_z + stop_offset``, so
+        every point of the search box satisfies exit < entry < stop by construction
+        and no evaluation needs a penalty value.
         """
-        Initialize signal generator.
-
-        Parameters
-        ----------
-        entry_threshold : float
-            Z-score threshold for entry (absolute value)
-        exit_threshold : float
-            Z-score threshold for exit (absolute value)
-        stop_loss : float
-            Z-score threshold for stop loss (absolute value)
-        position_limits : Optional[Dict[str, float]]
-            Position size limits
-        """
-        self.logger = StructuredLogger(__name__)
-
-        self.entry_threshold = entry_threshold
-        self.exit_threshold = exit_threshold
-        self.stop_loss = stop_loss
-
-        if position_limits is None:
-            position_limits = {"max_long": 1.0, "max_short": 1.0}
-
-        self.position_limits = position_limits
-        self.current_position = 0
-
-        # Validate thresholds
-        if entry_threshold <= 0:
-            raise SignalGenerationException(
-                "Entry threshold must be positive",
-                context={"entry_threshold": entry_threshold}
-            )
-
-        if exit_threshold < 0:
-            raise SignalGenerationException(
-                "Exit threshold must be non-negative",
-                context={"exit_threshold": exit_threshold}
-            )
-
-        if exit_threshold >= entry_threshold:
-            raise SignalGenerationException(
-                "Exit threshold must be less than entry threshold",
-                context={"exit_threshold": exit_threshold, "entry_threshold": entry_threshold}
-            )
-
-        if stop_loss <= entry_threshold:
-            raise SignalGenerationException(
-                "Stop loss must be greater than entry threshold",
-                context={"stop_loss": stop_loss, "entry_threshold": entry_threshold}
-            )
-
-        self.logger.info(
-            "SignalGenerator initialized",
-            entry_threshold=entry_threshold,
-            exit_threshold=exit_threshold,
-            stop_loss=stop_loss
+        entry = float(entry_z)
+        return cls(
+            entry_z=entry,
+            exit_z=float(exit_fraction) * entry,
+            stop_z=entry + float(stop_offset),
+            lookback=int(lookback),
         )
 
-    @timed_execution
-    def generate_signals(self, zscore: pd.Series) -> pd.Series:
-        """
-        Generate mean reversion trading signals.
-
-        Parameters
-        ----------
-        zscore : pd.Series
-            Spread z-score time series
-
-        Returns
-        -------
-        pd.Series
-            Signal time series: 1 (long), -1 (short), 0 (no position)
-
-        Examples
-        --------
-        >>> signals = generator.generate_signals(zscore)
-        >>> print(signals.value_counts())
-
-        Notes
-        -----
-        State Machine:
-            IDLE (0) → LONG (1):   zscore < -entry_threshold
-            IDLE (0) → SHORT (-1): zscore > entry_threshold
-            LONG (1) → IDLE (0):   zscore > -exit_threshold OR zscore < -stop_loss
-            SHORT (-1) → IDLE (0): zscore < exit_threshold OR zscore > stop_loss
-        """
-        signals = pd.Series(0, index=zscore.index, name='signal')
-        position = 0  # Current position state
-
-        for i in range(len(zscore)):
-            z = zscore.iloc[i]
-
-            # Skip if NaN
-            if pd.isna(z):
-                signals.iloc[i] = position
-                continue
-
-            if position == 0:  # No position (IDLE)
-                if z < -self.entry_threshold:
-                    position = 1  # Enter long
-                elif z > self.entry_threshold:
-                    position = -1  # Enter short
-
-            elif position == 1:  # Long position
-                # Exit if crosses exit threshold or hits stop loss
-                if z > -self.exit_threshold or z < -self.stop_loss:
-                    position = 0  # Exit long
-
-            elif position == -1:  # Short position
-                # Exit if crosses exit threshold or hits stop loss
-                if z < self.exit_threshold or z > self.stop_loss:
-                    position = 0  # Exit short
-
-            signals.iloc[i] = position
-
-        # Count signals
-        long_count = (signals == 1).sum()
-        short_count = (signals == -1).sum()
-        idle_count = (signals == 0).sum()
-
-        self.logger.info(
-            "Signals generated",
-            total_points=len(signals),
-            long_signals=long_count,
-            short_signals=short_count,
-            idle=idle_count
-        )
-
-        self.current_position = position
-
-        return signals
-
-    def get_current_position(self) -> int:
-        """
-        Get current position state.
-
-        Returns
-        -------
-        int
-            Current position (1: long, -1: short, 0: no position)
-        """
-        return self.current_position
+    def as_dict(self) -> dict[str, float]:
+        return {"entry_z": self.entry_z, "exit_z": self.exit_z, "stop_z": self.stop_z, "lookback": int(self.lookback)}
 
 
-# Standalone utility function
+def generate_signals(zscore: pd.Series, params: SignalParams) -> pd.DataFrame:
+    """Run the state machine over ``zscore``.
 
-def generate_signals(
-    zscore: pd.Series,
-    entry_threshold: float = 2.0,
-    exit_threshold: float = 0.5,
-    stop_loss: float = 4.0
-) -> pd.Series:
+    Returns a DataFrame indexed like ``zscore`` with columns ``state`` (int8 target
+    position decided at each bar's close) and ``event`` ("", "entry", "exit", "stop").
     """
-    Generate mean reversion trading signals.
+    values = zscore.to_numpy(dtype=float)
+    n = len(values)
+    state = np.zeros(n, dtype=np.int8)
+    event = np.full(n, "", dtype=object)
 
-    Parameters
-    ----------
-    zscore : pd.Series
-        Spread z-score time series
-    entry_threshold : float
-        Z-score threshold for trade entry
-    exit_threshold : float
-        Z-score threshold for trade exit
-    stop_loss : float
-        Z-score threshold for stop loss
-
-    Returns
-    -------
-    pd.Series
-        Signal time series: 1 (long), -1 (short), 0 (no position)
-
-    Examples
-    --------
-    >>> signals = generate_signals(zscore, entry_threshold=2.0, exit_threshold=0.5)
-
-    Notes
-    -----
-    State Machine:
-        IDLE → LONG:   zscore < -entry_threshold (spread oversold)
-        IDLE → SHORT:  zscore > entry_threshold (spread overbought)
-        LONG → IDLE:   zscore > -exit_threshold OR zscore < -stop_loss
-        SHORT → IDLE:  zscore < exit_threshold OR zscore > stop_loss
-    """
-    signals = pd.Series(0, index=zscore.index)
+    entry, exit_, stop = params.entry_z, params.exit_z, params.stop_z
     position = 0
+    armed = True
 
-    for i in range(len(zscore)):
-        z = zscore.iloc[i]
-
-        if pd.isna(z):
-            signals.iloc[i] = position
+    for t in range(n):
+        z = values[t]
+        if math.isnan(z):
+            state[t] = position
             continue
 
-        if position == 0:  # No position
-            if z < -entry_threshold:
-                position = 1  # Enter long
-            elif z > entry_threshold:
-                position = -1  # Enter short
+        if position == 0:
+            if not armed:
+                if abs(z) < entry:
+                    armed = True
+            elif -stop < z <= -entry:
+                position = 1
+                event[t] = ENTRY
+            elif entry <= z < stop:
+                position = -1
+                event[t] = ENTRY
+            elif abs(z) >= stop:
+                armed = False
+        elif position == 1:
+            if z >= -exit_:
+                position = 0
+                event[t] = EXIT
+            elif z <= -stop:
+                position = 0
+                event[t] = STOP
+                armed = False
+        else:
+            if z <= exit_:
+                position = 0
+                event[t] = EXIT
+            elif z >= stop:
+                position = 0
+                event[t] = STOP
+                armed = False
 
-        elif position == 1:  # Long position
-            if z > -exit_threshold or z < -stop_loss:
-                position = 0  # Exit long
+        state[t] = position
 
-        elif position == -1:  # Short position
-            if z < exit_threshold or z > stop_loss:
-                position = 0  # Exit short
-
-        signals.iloc[i] = position
-
-    return signals
+    return pd.DataFrame({"state": state, "event": event}, index=zscore.index)

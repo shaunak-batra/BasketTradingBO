@@ -46,17 +46,21 @@ htmlcov/
 .tox/
 .hypothesis/
 
-# Data files
-data/raw/
-data/processed/
-data/cache/
+# Market data snapshots (Yahoo data is not redistributed; results record each file's SHA-256)
+data/
 
-# Results and outputs (IMPORTANT - don't commit results!)
+# Outputs. Curated case-study results under results/case_studies/ are committed;
+# v1 outputs produced by the old, incorrect backtester are archived locally only.
+results/_legacy_v1/
+results/scratch/
 figures/
 models/
 logs/
 test_results/
 *.log
+
+# Personal notes
+notes/
 
 # Environment variables
 .env

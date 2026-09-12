@@ -1,151 +1,68 @@
-"""Functions for saving and loading data in various formats."""
+"""Serialisation helpers: strict JSON output and file hashing."""
 
+from __future__ import annotations
+
+import hashlib
 import json
+import math
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
-def save_parquet(df: pd.DataFrame, file_path: str, **kwargs: Any) -> None:
-    """Save DataFrame to Parquet format.
+def to_jsonable(obj: Any) -> Any:
+    """Recursively convert numpy/pandas values to plain JSON types.
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame to save
-    file_path : str
-        Output file path
-    **kwargs : Any
-        Additional arguments passed to to_parquet()
+    Non-finite floats (NaN, +/-inf) become ``None`` so the output is valid JSON.
+    Unknown types raise ``TypeError`` instead of being stringified silently.
     """
-    Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(file_path, **kwargs)
+    if obj is None or isinstance(obj, str):
+        return obj
+    if obj is pd.NaT:
+        return None
+    if isinstance(obj, dict):
+        return {str(key): to_jsonable(value) for key, value in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_jsonable(value) for value in obj]
+    if isinstance(obj, np.ndarray):
+        return [to_jsonable(value) for value in obj.tolist()]
+    if isinstance(obj, (bool, np.bool_)):
+        return bool(obj)
+    if isinstance(obj, (int, np.integer)):
+        return int(obj)
+    if isinstance(obj, (float, np.floating)):
+        value = float(obj)
+        return value if math.isfinite(value) else None
+    if isinstance(obj, (pd.Timestamp, datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, Path):
+        return obj.as_posix()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serialisable")
 
 
-def load_parquet(file_path: str, **kwargs: Any) -> pd.DataFrame:
-    """Load DataFrame from Parquet format.
-
-    Parameters
-    ----------
-    file_path : str
-        Input file path
-    **kwargs : Any
-        Additional arguments passed to read_parquet()
-
-    Returns
-    -------
-    pd.DataFrame
-        Loaded DataFrame
-    """
-    return pd.read_parquet(file_path, **kwargs)
+def save_json(data: Any, path: str | Path) -> Path:
+    """Write ``data`` as indented UTF-8 JSON, creating parent directories."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(to_jsonable(data), indent=2, allow_nan=False)
+    # newline="\n" keeps the bytes identical on every OS, so re-running does not
+    # rewrite every line of a committed file.
+    path.write_text(text + "\n", encoding="utf-8", newline="\n")
+    return path
 
 
-def save_hdf5(df: pd.DataFrame, file_path: str, key: str = "data", **kwargs: Any) -> None:
-    """Save DataFrame to HDF5 format.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame to save
-    file_path : str
-        Output file path
-    key : str
-        HDF5 key (default: "data")
-    **kwargs : Any
-        Additional arguments passed to to_hdf()
-    """
-    Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_hdf(file_path, key=key, mode='w', **kwargs)
+def load_json(path: str | Path) -> Any:
+    """Read a JSON file written by :func:`save_json`."""
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def load_hdf5(file_path: str, key: str = "data", **kwargs: Any) -> pd.DataFrame:
-    """Load DataFrame from HDF5 format.
-
-    Parameters
-    ----------
-    file_path : str
-        Input file path
-    key : str
-        HDF5 key (default: "data")
-    **kwargs : Any
-        Additional arguments passed to read_hdf()
-
-    Returns
-    -------
-    pd.DataFrame
-        Loaded DataFrame
-    """
-    return pd.read_hdf(file_path, key=key, **kwargs)
-
-
-def save_json(data: Dict[str, Any], file_path: str, indent: int = 2, **kwargs: Any) -> None:
-    """Save dictionary to JSON format.
-
-    Parameters
-    ----------
-    data : Dict
-        Dictionary to save
-    file_path : str
-        Output file path
-    indent : int
-        JSON indentation (default: 2)
-    **kwargs : Any
-        Additional arguments passed to json.dump()
-    """
-    Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(file_path, 'w') as f:
-        json.dump(data, f, indent=indent, **kwargs)
-
-
-def load_json(file_path: str, **kwargs: Any) -> Dict[str, Any]:
-    """Load dictionary from JSON format.
-
-    Parameters
-    ----------
-    file_path : str
-        Input file path
-    **kwargs : Any
-        Additional arguments passed to json.load()
-
-    Returns
-    -------
-    Dict
-        Loaded dictionary
-    """
-    with open(file_path, 'r') as f:
-        return json.load(f, **kwargs)
-
-
-def save_csv(df: pd.DataFrame, file_path: str, **kwargs: Any) -> None:
-    """Save DataFrame to CSV format.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        DataFrame to save
-    file_path : str
-        Output file path
-    **kwargs : Any
-        Additional arguments passed to to_csv()
-    """
-    Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(file_path, **kwargs)
-
-
-def load_csv(file_path: str, **kwargs: Any) -> pd.DataFrame:
-    """Load DataFrame from CSV format.
-
-    Parameters
-    ----------
-    file_path : str
-        Input file path
-    **kwargs : Any
-        Additional arguments passed to read_csv()
-
-    Returns
-    -------
-    pd.DataFrame
-        Loaded DataFrame
-    """
-    return pd.read_csv(file_path, **kwargs)
+def sha256_file(path: str | Path) -> str:
+    """Hex SHA-256 digest of a file's bytes."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

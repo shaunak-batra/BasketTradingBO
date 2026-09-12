@@ -1,495 +1,193 @@
-"""
-Module: Cointegration Engine
+"""Cointegration tests on log prices.
 
-Perform Johansen and Engle-Granger cointegration tests to identify
-mean-reverting spread relationships in multi-asset baskets.
-
-Classes
--------
-CointegrationEngine
-    Main interface for cointegration testing
-CointegrationResult
-    Container for test results and metadata
-StationarityResult
-    Container for ADF test results
-VECMResult
-    Container for VECM estimation results
-
-Notes
------
-Uses statsmodels for statistical tests. All test results include full
-diagnostic information (eigenvalues, eigenvectors, p-values).
+The Johansen trace test decides whether a basket is traded, and its leading
+eigenvector supplies the basket weights. The Engle-Granger residual test is
+reported alongside it as a cross-check only.
 
 References
 ----------
-.. [1] Johansen, S. (1991). "Estimation and hypothesis testing of cointegration
-       vectors in Gaussian vector autoregressive models." Econometrica, 1551-1580.
-.. [2] Engle, R. F., & Granger, C. W. (1987). "Co-integration and error correction."
-       Econometrica, 251-276.
-
-Author: Quantitative Research Team
-Created: 2025-01-18
+Johansen, S. (1991). Estimation and hypothesis testing of cointegration vectors in
+    Gaussian vector autoregressive models. Econometrica 59(6), 1551-1580.
+Engle, R. F. & Granger, C. W. J. (1987). Co-integration and error correction.
+    Econometrica 55(2), 251-276.
+MacKinnon, J. G. (2010). Critical values for cointegration tests. Queen's Economics
+    Department Working Paper 1227.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
-from statsmodels.tsa.stattools import adfuller
-from statsmodels.tsa.vector_ar.vecm import VECM, coint_johansen
+from statsmodels.tsa.stattools import coint
+from statsmodels.tsa.vector_ar.vecm import coint_johansen
 
-from src.utils.config import ConfigManager
-from src.utils.exceptions import CointegrationException, NoCointegrationException, StationarityException
-from src.utils.logger import StructuredLogger, timed_execution
+from src.utils.exceptions import ConfigError, DataError
 
-
-@dataclass
-class StationarityResult:
-    """
-    Container for stationarity test results.
-
-    Attributes
-    ----------
-    test_statistic : float
-        ADF test statistic
-    p_value : float
-        p-value for the test
-    critical_values : Dict[str, float]
-        Critical values at different significance levels
-    is_stationary : bool
-        Whether series is stationary (reject unit root)
-    used_lags : int
-        Number of lags used in test
-    """
-    test_statistic: float
-    p_value: float
-    critical_values: Dict[str, float]
-    is_stationary: bool
-    used_lags: int
+CRITICAL_VALUE_COLUMN = {0.10: 0, 0.05: 1, 0.01: 2}
+MAX_JOHANSEN_SERIES = 12  # statsmodels tabulates critical values for up to 12 series
 
 
-@dataclass
-class CointegrationResult:
-    """
-    Container for cointegration test results.
+@dataclass(frozen=True)
+class JohansenResult:
+    """Johansen test output. Index r of each array tests H0: rank <= r."""
 
-    Attributes
-    ----------
-    test_statistic : float
-        Test statistic (trace or max eigenvalue)
-    critical_values : Dict[str, float]
-        Critical values at different significance levels
-    p_value : float
-        Approximate p-value
-    cointegrating_rank : int
-        Number of cointegrating relationships
-    eigenvectors : np.ndarray
-        Cointegrating vectors (each column is a vector)
-    eigenvalues : np.ndarray
-        Eigenvalues from test
-    is_cointegrated : bool
-        Whether cointegration is detected
-    metadata : Dict[str, Any]
-        Additional test metadata
-    """
-    test_statistic: float
-    critical_values: Dict[str, float]
-    p_value: float
-    cointegrating_rank: int
-    eigenvectors: npt.NDArray[np.float64]
+    trace_stats: npt.NDArray[np.float64]
+    trace_critical: npt.NDArray[np.float64]
+    max_eig_stats: npt.NDArray[np.float64]
+    max_eig_critical: npt.NDArray[np.float64]
     eigenvalues: npt.NDArray[np.float64]
-    is_cointegrated: bool
-    metadata: Dict[str, Any]
+    weights: npt.NDArray[np.float64]  # leading eigenvector, sum(|w|) = 1, first non-zero element > 0
+    rank_trace: int
+    rank_max_eig: int
+    significance: float
+    n_obs: int
+
+    @property
+    def is_cointegrated(self) -> bool:
+        """True when the trace test rejects rank 0 at ``significance``."""
+        return self.rank_trace > 0
+
+    def summary(self) -> dict:
+        return {
+            "trace_stat_r0": float(self.trace_stats[0]),
+            "trace_critical_r0": float(self.trace_critical[0]),
+            "max_eig_stat_r0": float(self.max_eig_stats[0]),
+            "max_eig_critical_r0": float(self.max_eig_critical[0]),
+            "rank_trace": self.rank_trace,
+            "rank_max_eig": self.rank_max_eig,
+            "significance": self.significance,
+            "n_obs": self.n_obs,
+            "weights": [float(w) for w in self.weights],
+        }
 
 
-@dataclass
-class VECMResult:
+@dataclass(frozen=True)
+class EngleGrangerResult:
+    statistic: float
+    p_value: float
+    critical_5pct: float
+
+    @property
+    def rejects_at_5pct(self) -> bool:
+        return self.statistic < self.critical_5pct
+
+
+def normalize_weights(vector: npt.ArrayLike) -> npt.NDArray[np.float64]:
+    """Scale a cointegrating vector to ``sum(|w|) = 1`` with its first non-zero element positive.
+
+    Any non-zero multiple of a cointegrating vector is also cointegrating. This fixes
+    one representative, so weights are comparable across folds and can be used
+    directly as dollar allocations per unit of gross exposure.
     """
-    Container for VECM estimation results.
+    w = np.asarray(vector, dtype=float)
+    if w.ndim != 1 or not np.all(np.isfinite(w)) or np.abs(w).sum() == 0:
+        raise ValueError(f"cannot normalise weights {vector!r}")
+    w = w / np.abs(w).sum()
+    first = w[np.flatnonzero(w)[0]]
+    return w if first > 0 else -w
 
-    Attributes
+
+def net_exposure(weights: npt.ArrayLike) -> float:
+    """Net exposure as a share of gross: ``|sum(w)| / sum(|w|)``.
+
+    Zero means a perfectly dollar-hedged basket; one means every leg points the same
+    way, so the "spread" is really a directional position. A cointegrating vector is
+    not required to be hedged, which is why this is worth checking before trading.
+    """
+    w = np.asarray(weights, dtype=float)
+    gross = np.abs(w).sum()
+    if w.ndim != 1 or not np.all(np.isfinite(w)) or gross == 0:
+        raise ValueError(f"cannot measure net exposure of {weights!r}")
+    return float(abs(w.sum()) / gross)
+
+
+def _sequential_rank(stats: npt.NDArray[np.float64], critical: npt.NDArray[np.float64]) -> int:
+    rank = 0
+    for statistic, critical_value in zip(stats, critical):
+        if statistic > critical_value:
+            rank += 1
+        else:
+            break
+    return rank
+
+
+def _validated_panel(log_prices: pd.DataFrame | npt.ArrayLike) -> npt.NDArray[np.float64]:
+    data = np.asarray(log_prices, dtype=float)
+    if data.ndim != 2 or data.shape[1] < 2:
+        raise DataError("cointegration tests need a 2-D panel with at least two series")
+    if not np.all(np.isfinite(data)):
+        raise DataError("log prices contain NaN or infinite values")
+    return data
+
+
+def johansen_test(
+    log_prices: pd.DataFrame | npt.ArrayLike,
+    significance: float = 0.05,
+    det_order: int = 0,
+    k_ar_diff: int = 1,
+) -> JohansenResult:
+    """Johansen trace and maximum-eigenvalue tests on a panel of log prices.
+
+    Parameters
     ----------
-    alpha : np.ndarray
-        Adjustment coefficients
-    beta : np.ndarray
-        Cointegrating vectors
-    gamma : np.ndarray
-        Short-run coefficients
-    deterministic : str
-        Deterministic term specification
+    log_prices
+        T x k panel of log prices (the same scale the spread is built on).
+    significance
+        0.10, 0.05 or 0.01 (the levels statsmodels tabulates).
+    det_order
+        -1 no deterministic term, 0 constant, 1 linear trend.
+    k_ar_diff
+        Number of lagged differences in the VECM.
     """
-    alpha: npt.NDArray[np.float64]
-    beta: npt.NDArray[np.float64]
-    gamma: npt.NDArray[np.float64]
-    deterministic: str
+    if significance not in CRITICAL_VALUE_COLUMN:
+        raise ConfigError(f"significance must be one of {sorted(CRITICAL_VALUE_COLUMN)}, got {significance}")
+    if det_order not in (-1, 0, 1):
+        raise ConfigError(f"det_order must be -1, 0 or 1, got {det_order}")
+    if not isinstance(k_ar_diff, (int, np.integer)) or isinstance(k_ar_diff, bool) or k_ar_diff < 0:
+        raise ConfigError(f"k_ar_diff must be an integer >= 0, got {k_ar_diff!r}")
+
+    data = _validated_panel(log_prices)
+    n_obs, n_series = data.shape
+    if n_series > MAX_JOHANSEN_SERIES:
+        raise DataError(f"Johansen critical values are available for at most {MAX_JOHANSEN_SERIES} series")
+    min_obs = max(50, 10 * n_series)
+    if n_obs < min_obs:
+        raise DataError(f"Johansen test needs at least {min_obs} observations, got {n_obs}")
+
+    result = coint_johansen(data, det_order, int(k_ar_diff))
+    column = CRITICAL_VALUE_COLUMN[significance]
+    trace_stats = np.asarray(result.lr1, dtype=float)
+    trace_critical = np.asarray(result.cvt[:, column], dtype=float)
+    max_eig_stats = np.asarray(result.lr2, dtype=float)
+    max_eig_critical = np.asarray(result.cvm[:, column], dtype=float)
+    eigenvalues = np.asarray(result.eig, dtype=float)
+    leading = int(np.argmax(eigenvalues))
+
+    return JohansenResult(
+        trace_stats=trace_stats,
+        trace_critical=trace_critical,
+        max_eig_stats=max_eig_stats,
+        max_eig_critical=max_eig_critical,
+        eigenvalues=eigenvalues,
+        weights=normalize_weights(result.evec[:, leading]),
+        rank_trace=_sequential_rank(trace_stats, trace_critical),
+        rank_max_eig=_sequential_rank(max_eig_stats, max_eig_critical),
+        significance=significance,
+        n_obs=n_obs,
+    )
 
 
-class CointegrationEngine:
+def engle_granger_test(log_prices: pd.DataFrame) -> EngleGrangerResult:
+    """Engle-Granger residual ADF test, regressing the first series on the others.
+
+    Uses MacKinnon (2010) critical values for the number of series, which are more
+    negative than plain ADF values because the residual comes from an estimated
+    regression. The result depends on which series is the regressand, so it is a
+    cross-check on the Johansen decision rather than a substitute for it.
     """
-    Perform Johansen and Engle-Granger cointegration tests.
-
-    Methods
-    -------
-    test_cointegration(prices)
-        Test for cointegration relationships
-    find_cointegrating_vectors(prices, rank)
-        Extract cointegrating vectors
-    calculate_spread(prices, weights)
-        Calculate spread from prices and weights
-    test_stationarity(series)
-        Test if series is stationary
-    estimate_vecm(prices, rank)
-        Estimate VECM model
-
-    Examples
-    --------
-    >>> engine = CointegrationEngine()
-    >>> result = engine.test_cointegration(prices)
-    >>> if result.is_cointegrated:
-    ...     spread = engine.calculate_spread(prices, result.eigenvectors[:, 0])
-    """
-
-    def __init__(self, config: Optional[ConfigManager] = None):
-        """
-        Initialize cointegration engine.
-
-        Parameters
-        ----------
-        config : Optional[ConfigManager]
-            Configuration manager instance
-        """
-        self.logger = StructuredLogger(__name__)
-
-        if config is None:
-            config = ConfigManager.load_config()
-
-        self.config = config
-        self.method = config.get("cointegration.method", "johansen")
-        self.significance_level = config.get("cointegration.significance_level", 0.05)
-        self.deterministic_term = config.get("cointegration.johansen.deterministic_term", "c")
-        self.test_statistic_type = config.get("cointegration.johansen.test_statistic", "trace")
-
-        self.logger.info(
-            "CointegrationEngine initialized",
-            method=self.method,
-            significance_level=self.significance_level
-        )
-
-    @timed_execution
-    def test_cointegration(self, prices: pd.DataFrame) -> CointegrationResult:
-        """
-        Test for cointegration relationships using Johansen test.
-
-        Parameters
-        ----------
-        prices : pd.DataFrame
-            Price data for multiple assets
-
-        Returns
-        -------
-        CointegrationResult
-            Test results with cointegrating vectors
-
-        Raises
-        ------
-        NoCointegrationException
-            If no cointegration is detected
-
-        Examples
-        --------
-        >>> result = engine.test_cointegration(prices)
-        >>> print(f"Cointegrated: {result.is_cointegrated}")
-        >>> print(f"Rank: {result.cointegrating_rank}")
-
-        Notes
-        -----
-        Uses Johansen trace test with constant deterministic term.
-        Null hypothesis: cointegration rank ≤ r
-        """
-        if self.method != "johansen":
-            raise ValueError(f"Method {self.method} not implemented yet")
-
-        # Convert deterministic term to integer
-        det_order_map = {"nc": -1, "c": 0, "ct": 1, "ctt": 2}
-        det_order = det_order_map.get(self.deterministic_term, 0)
-
-        # Run Johansen test
-        result = coint_johansen(prices, det_order=det_order, k_ar_diff=1)
-
-        # Extract results based on test statistic type
-        if self.test_statistic_type == "trace":
-            test_stats = result.lr1  # Trace statistic
-            critical_vals = result.cvt  # Critical values for trace
-        else:  # max_eig
-            test_stats = result.lr2  # Max eigenvalue statistic
-            critical_vals = result.cvm  # Critical values for max eigenvalue
-
-        # Determine cointegrating rank
-        # Compare test statistic to critical value at significance level
-        sig_level_idx = {0.10: 0, 0.05: 1, 0.01: 2}.get(self.significance_level, 1)
-
-        cointegrating_rank = 0
-        for i in range(len(test_stats)):
-            if test_stats[i] > critical_vals[i, sig_level_idx]:
-                cointegrating_rank = i + 1
-            else:
-                break
-
-        is_cointegrated = cointegrating_rank > 0
-
-        # Extract eigenvectors and eigenvalues
-        eigenvectors = result.evec
-        eigenvalues = result.eig
-
-        # Build critical values dict
-        critical_values_dict = {
-            "10%": critical_vals[0, 0],
-            "5%": critical_vals[0, 1],
-            "1%": critical_vals[0, 2]
-        }
-
-        # Approximate p-value (simplified)
-        p_value = 0.05 if is_cointegrated else 0.10
-
-        self.logger.info(
-            "Cointegration test complete",
-            is_cointegrated=is_cointegrated,
-            rank=cointegrating_rank,
-            test_statistic=float(test_stats[0]),
-            method=self.test_statistic_type
-        )
-
-        coint_result = CointegrationResult(
-            test_statistic=float(test_stats[0]),
-            critical_values=critical_values_dict,
-            p_value=p_value,
-            cointegrating_rank=cointegrating_rank,
-            eigenvectors=eigenvectors,
-            eigenvalues=eigenvalues,
-            is_cointegrated=is_cointegrated,
-            metadata={
-                "method": "johansen",
-                "test_type": self.test_statistic_type,
-                "deterministic": self.deterministic_term,
-                "n_obs": len(prices),
-                "n_vars": len(prices.columns)
-            }
-        )
-
-        if not is_cointegrated:
-            raise NoCointegrationException(
-                "No cointegration detected at specified significance level",
-                context={
-                    "significance_level": self.significance_level,
-                    "test_statistic": float(test_stats[0]),
-                    "critical_value": critical_values_dict["5%"]
-                }
-            )
-
-        return coint_result
-
-    def find_cointegrating_vectors(
-        self,
-        prices: pd.DataFrame,
-        rank: Optional[int] = None
-    ) -> npt.NDArray[np.float64]:
-        """
-        Find cointegrating vectors.
-
-        Parameters
-        ----------
-        prices : pd.DataFrame
-            Price data
-        rank : Optional[int]
-            Number of vectors to extract (uses detected rank if None)
-
-        Returns
-        -------
-        np.ndarray
-            Cointegrating vectors (columns)
-        """
-        result = self.test_cointegration(prices)
-
-        if rank is None:
-            rank = result.cointegrating_rank
-
-        vectors = result.eigenvectors[:, :rank]
-
-        self.logger.info(
-            "Cointegrating vectors extracted",
-            rank=rank,
-            shape=vectors.shape
-        )
-
-        return vectors
-
-    def calculate_spread(
-        self,
-        prices: pd.DataFrame,
-        weights: npt.NDArray[np.float64]
-    ) -> pd.Series:
-        """
-        Calculate spread from prices and cointegrating vector.
-
-        Parameters
-        ----------
-        prices : pd.DataFrame
-            Price data
-        weights : np.ndarray
-            Cointegrating vector weights
-
-        Returns
-        -------
-        pd.Series
-            Spread time series
-
-        Examples
-        --------
-        >>> spread = engine.calculate_spread(prices, result.eigenvectors[:, 0])
-        """
-        # Use log prices for spread construction
-        log_prices = np.log(prices)
-
-        # Calculate weighted sum
-        spread = (log_prices * weights).sum(axis=1)
-
-        self.logger.info(
-            "Spread calculated",
-            components=len(weights),
-            length=len(spread)
-        )
-
-        return spread
-
-    @timed_execution
-    def test_stationarity(
-        self,
-        series: pd.Series,
-        method: str = "adf"
-    ) -> StationarityResult:
-        """
-        Test if series is stationary using ADF test.
-
-        Parameters
-        ----------
-        series : pd.Series
-            Time series to test
-        method : str
-            Test method ('adf' only for now)
-
-        Returns
-        -------
-        StationarityResult
-            Test results
-
-        Raises
-        ------
-        StationarityException
-            If series is not stationary
-
-        Examples
-        --------
-        >>> result = engine.test_stationarity(spread)
-        >>> print(f"Stationary: {result.is_stationary}")
-
-        Notes
-        -----
-        Null hypothesis: Series has unit root (non-stationary)
-        Reject if p-value < 0.05
-        """
-        if method != "adf":
-            raise ValueError(f"Method {method} not implemented")
-
-        # Run ADF test
-        adf_result = adfuller(
-            series.dropna(),
-            regression=self.config.get("cointegration.adf.regression", "c"),
-            autolag=self.config.get("cointegration.adf.autolag", "BIC"),
-            maxlag=self.config.get("cointegration.adf.maxlag", 10)
-        )
-
-        test_statistic = adf_result[0]
-        p_value = adf_result[1]
-        used_lags = adf_result[2]
-        critical_values = {
-            "1%": adf_result[4]["1%"],
-            "5%": adf_result[4]["5%"],
-            "10%": adf_result[4]["10%"]
-        }
-
-        is_stationary = p_value < self.significance_level
-
-        self.logger.info(
-            "Stationarity test complete",
-            is_stationary=is_stationary,
-            p_value=round(p_value, 4),
-            test_statistic=round(test_statistic, 4)
-        )
-
-        result = StationarityResult(
-            test_statistic=test_statistic,
-            p_value=p_value,
-            critical_values=critical_values,
-            is_stationary=is_stationary,
-            used_lags=used_lags
-        )
-
-        if not is_stationary:
-            raise StationarityException(
-                "Series is not stationary",
-                context={
-                    "p_value": p_value,
-                    "test_statistic": test_statistic,
-                    "critical_value_5%": critical_values["5%"]
-                }
-            )
-
-        return result
-
-    @timed_execution
-    def estimate_vecm(
-        self,
-        prices: pd.DataFrame,
-        rank: int
-    ) -> VECMResult:
-        """
-        Estimate Vector Error Correction Model.
-
-        Parameters
-        ----------
-        prices : pd.DataFrame
-            Price data
-        rank : int
-            Cointegrating rank
-
-        Returns
-        -------
-        VECMResult
-            VECM estimation results
-
-        Examples
-        --------
-        >>> vecm_result = engine.estimate_vecm(prices, rank=1)
-        """
-        # Convert deterministic term
-        det_order_map = {"nc": "nc", "c": "ci", "ct": "cili", "ctt": "cili"}
-        deterministic = det_order_map.get(self.deterministic_term, "ci")
-
-        # Estimate VECM
-        model = VECM(prices, k_ar_diff=1, coint_rank=rank, deterministic=deterministic)
-        vecm_fit = model.fit()
-
-        self.logger.info(
-            "VECM estimated",
-            rank=rank,
-            deterministic=deterministic
-        )
-
-        return VECMResult(
-            alpha=vecm_fit.alpha,
-            beta=vecm_fit.beta,
-            gamma=vecm_fit.gamma,
-            deterministic=deterministic
-        )
+    data = _validated_panel(log_prices)
+    statistic, p_value, critical = coint(data[:, 0], data[:, 1:], trend="c", autolag="aic")
+    return EngleGrangerResult(float(statistic), float(p_value), float(critical[1]))

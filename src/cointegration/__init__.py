@@ -1,7 +1,1 @@
-"""Cointegration analysis module."""
-
-__all__ = [
-    "CointegrationEngine",
-    "CointegrationResult",
-    "SpreadCalculator",
-]
+"""Cointegration tests and spread diagnostics."""

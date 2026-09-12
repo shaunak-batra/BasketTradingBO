@@ -1,390 +1,129 @@
+"""Static charts for walk-forward results.
+
+Uses matplotlib's object API (``Figure``) instead of ``pyplot``, so no global
+plotting state is touched and no display is needed.
 """
-Module: Visualization Plots
 
-Plotting functions for backtesting results, optimization convergence, and risk metrics.
-
-Functions
----------
-plot_portfolio_performance
-    Plot portfolio value and returns over time
-plot_spread_zscore
-    Plot spread and z-score with entry/exit thresholds
-plot_optimization_convergence
-    Plot Bayesian optimization convergence
-plot_var_distribution
-    Plot VaR distribution and thresholds
-plot_correlation_matrix
-    Plot asset correlation heatmap
-
-Author: Quantitative Research Team
-Created: 2025-01-18
-"""
+from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
 
-import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
-import seaborn as sns
+from matplotlib.figure import Figure
 
-from src.utils.logger import StructuredLogger
+from src.backtesting.walk_forward import WalkForwardResult
 
-# Set style
-sns.set_style("whitegrid")
-plt.rcParams['figure.figsize'] = (12, 6)
+DPI = 110
+BLUE = "#1f5f99"
+LIGHT_BLUE = "#8fb3d9"
+GREEN = "#1a7f37"
+RED = "#b23a3a"
+ORANGE = "#d08a1e"
+GREY = "0.35"
 
 
-def plot_portfolio_performance(
-    portfolio_value: pd.Series,
-    returns: pd.Series,
-    signals: pd.Series,
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot portfolio performance over time.
+def _save(fig: Figure, path: str | Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=DPI, bbox_inches="tight")
+    return path
 
-    Parameters
-    ----------
-    portfolio_value : pd.Series
-        Portfolio value time series
-    returns : pd.Series
-        Daily returns
-    signals : pd.Series
-        Trading signals
-    save_path : Optional[str]
-        Path to save figure (if None, displays plot)
 
-    Examples
-    --------
-    >>> plot_portfolio_performance(result.portfolio_value, result.returns, result.signals)
-    """
-    logger = StructuredLogger(__name__)
+def _shade_untraded_folds(ax, result: WalkForwardResult, label: bool) -> None:
+    labelled = not label
+    for fold in result.folds:
+        if not fold.traded:
+            ax.axvspan(
+                fold.trading_start,
+                fold.trading_end,
+                color="0.88",
+                lw=0,
+                zorder=0,
+                label=None if labelled else "fold not traded",
+            )
+            labelled = True
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10))
 
-    # Portfolio value
-    axes[0].plot(portfolio_value.index, portfolio_value.values, linewidth=2, color='#2E86AB')
-    axes[0].set_title('Portfolio Value Over Time', fontsize=14, fontweight='bold')
-    axes[0].set_ylabel('Portfolio Value ($)', fontsize=12)
-    axes[0].grid(True, alpha=0.3)
+def plot_equity_and_drawdown(result: WalkForwardResult, path: str | Path, title: str) -> Path:
+    fig = Figure(figsize=(11, 6.5))
+    ax_equity, ax_drawdown = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [2, 1]})
+    equity = result.equity
+    values = equity.to_numpy(dtype=float)
 
-    # Cumulative returns
-    cumulative_returns = (1 + returns).cumprod() - 1
-    axes[1].plot(cumulative_returns.index, cumulative_returns.values * 100, linewidth=2, color='#06A77D')
-    axes[1].axhline(y=0, color='black', linestyle='--', alpha=0.5)
-    axes[1].set_title('Cumulative Returns', fontsize=14, fontweight='bold')
-    axes[1].set_ylabel('Cumulative Return (%)', fontsize=12)
-    axes[1].grid(True, alpha=0.3)
+    ax_equity.plot(equity.index, values, color=BLUE, lw=1.3, label="out-of-sample equity")
+    ax_equity.axhline(result.backtest_config.initial_capital, color=GREY, lw=0.8, ls="--", label="initial capital")
+    _shade_untraded_folds(ax_equity, result, label=True)
+    ax_equity.set_ylabel("equity ($)")
+    ax_equity.set_title(f"{title}: stitched out-of-sample equity")
+    ax_equity.legend(loc="upper left", frameon=False)
 
-    # Trading signals
-    axes[2].plot(signals.index, signals.values, linewidth=1.5, color='#D62828', alpha=0.7)
-    axes[2].fill_between(signals.index, 0, signals.values, where=(signals > 0), color='green', alpha=0.3, label='Long')
-    axes[2].fill_between(signals.index, 0, signals.values, where=(signals < 0), color='red', alpha=0.3, label='Short')
-    axes[2].axhline(y=0, color='black', linestyle='-', alpha=0.5)
-    axes[2].set_title('Trading Signals', fontsize=14, fontweight='bold')
-    axes[2].set_ylabel('Signal', fontsize=12)
-    axes[2].set_xlabel('Date', fontsize=12)
-    axes[2].set_ylim(-1.5, 1.5)
-    axes[2].legend(loc='upper right')
-    axes[2].grid(True, alpha=0.3)
+    drawdown = (values / np.maximum.accumulate(values) - 1.0) * 100.0
+    ax_drawdown.fill_between(equity.index, drawdown, 0.0, color=RED, alpha=0.45, lw=0)
+    _shade_untraded_folds(ax_drawdown, result, label=False)
+    ax_drawdown.set_ylabel("drawdown (%)")
 
-    plt.tight_layout()
+    for ax in (ax_equity, ax_drawdown):
+        ax.grid(alpha=0.3)
+    fig.align_ylabels()
+    return _save(fig, path)
 
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info("Portfolio performance plot saved", path=save_path)
-        plt.close()
+
+def plot_zscore(result: WalkForwardResult, path: str | Path, title: str) -> Path:
+    fig = Figure(figsize=(11, 4.8))
+    ax = fig.subplots()
+    zscore = result.zscore
+    ax.plot(zscore.index, zscore.to_numpy(dtype=float), color=GREEN, lw=0.9, label="spread z-score (fold weights)")
+
+    traded = [fold for fold in result.folds if fold.traded]
+    for i, fold in enumerate(traded):
+        params = fold.params
+        span = {"xmin": fold.trading_start, "xmax": fold.trading_end}
+        ax.hlines([params.entry_z, -params.entry_z], colors=RED, linestyles="--", lw=1.0, label="entry" if i == 0 else None, **span)
+        ax.hlines([params.exit_z, -params.exit_z], colors=ORANGE, linestyles=":", lw=1.0, label="exit" if i == 0 else None, **span)
+        ax.hlines([params.stop_z, -params.stop_z], colors=GREY, linestyles="-.", lw=1.0, label="stop" if i == 0 else None, **span)
+
+    trades = result.trades
+    if len(trades):
+        signal_dates = pd.DatetimeIndex(pd.to_datetime(trades["signal_date"]))
+        z_at_signal = zscore.reindex(signal_dates).to_numpy(dtype=float)
+        is_long = trades["direction"].to_numpy(dtype=float) > 0
+        ax.scatter(signal_dates[is_long], z_at_signal[is_long], marker="^", color=GREEN, s=34, zorder=3, label="long entry signal")
+        ax.scatter(signal_dates[~is_long], z_at_signal[~is_long], marker="v", color=RED, s=34, zorder=3, label="short entry signal")
+
+    _shade_untraded_folds(ax, result, label=True)
+    ax.axhline(0.0, color=GREY, lw=0.8)
+    finite = np.abs(zscore.to_numpy(dtype=float))
+    finite = finite[np.isfinite(finite)]
+    band = max((fold.params.stop_z for fold in traded), default=0.0) + 0.3
+    extent = finite.max() * 1.05 if finite.size else 0.0
+    limit = float(np.clip(max(extent, band), 4.5, 8.0))
+    ax.set_ylim(-limit, limit)
+    ax.set_ylabel("z-score")
+    ax.set_title(f"{title}: out-of-sample z-score and thresholds by fold")
+    ax.legend(loc="upper right", ncol=3, fontsize=8, frameon=False)
+    ax.grid(alpha=0.3)
+    return _save(fig, path)
+
+
+def plot_fold_sharpes(result: WalkForwardResult, path: str | Path, title: str) -> Path:
+    fig = Figure(figsize=(11, 4.2))
+    ax = fig.subplots()
+    table = result.fold_table()
+    traded = table[table["traded"]]
+    if traded.empty:
+        ax.text(0.5, 0.5, "no fold was traded", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
     else:
-        plt.show()
-
-
-def plot_spread_zscore(
-    spread: pd.Series,
-    zscore: pd.Series,
-    entry_threshold: float = 2.0,
-    exit_threshold: float = 0.5,
-    signals: Optional[pd.Series] = None,
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot spread and z-score with trading thresholds.
-
-    Parameters
-    ----------
-    spread : pd.Series
-        Spread time series
-    zscore : pd.Series
-        Z-score time series
-    entry_threshold : float
-        Entry threshold
-    exit_threshold : float
-        Exit threshold
-    signals : Optional[pd.Series]
-        Trading signals (optional)
-    save_path : Optional[str]
-        Path to save figure
-
-    Examples
-    --------
-    >>> plot_spread_zscore(spread, zscore, entry_threshold=2.0, exit_threshold=0.5)
-    """
-    logger = StructuredLogger(__name__)
-
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8))
-
-    # Spread
-    axes[0].plot(spread.index, spread.values, linewidth=1.5, color='#2E86AB')
-    axes[0].set_title('Basket Spread', fontsize=14, fontweight='bold')
-    axes[0].set_ylabel('Spread', fontsize=12)
-    axes[0].grid(True, alpha=0.3)
-
-    # Z-score
-    axes[1].plot(zscore.index, zscore.values, linewidth=1.5, color='#06A77D')
-
-    # Thresholds
-    axes[1].axhline(y=entry_threshold, color='red', linestyle='--', linewidth=2, label=f'Entry (+{entry_threshold}σ)')
-    axes[1].axhline(y=-entry_threshold, color='red', linestyle='--', linewidth=2, label=f'Entry (-{entry_threshold}σ)')
-    axes[1].axhline(y=exit_threshold, color='orange', linestyle='--', linewidth=1.5, label=f'Exit (+{exit_threshold}σ)')
-    axes[1].axhline(y=-exit_threshold, color='orange', linestyle='--', linewidth=1.5, label=f'Exit (-{exit_threshold}σ)')
-    axes[1].axhline(y=0, color='black', linestyle='-', alpha=0.5)
-
-    # Highlight signals if provided
-    if signals is not None:
-        long_entry = (signals == 1) & (signals.shift(1) != 1)
-        short_entry = (signals == -1) & (signals.shift(1) != -1)
-
-        axes[1].scatter(zscore[long_entry].index, zscore[long_entry].values,
-                       color='green', marker='^', s=100, zorder=5, label='Long Entry')
-        axes[1].scatter(zscore[short_entry].index, zscore[short_entry].values,
-                       color='red', marker='v', s=100, zorder=5, label='Short Entry')
-
-    axes[1].set_title('Z-Score with Trading Thresholds', fontsize=14, fontweight='bold')
-    axes[1].set_ylabel('Z-Score', fontsize=12)
-    axes[1].set_xlabel('Date', fontsize=12)
-    axes[1].legend(loc='upper right')
-    axes[1].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info("Spread z-score plot saved", path=save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_optimization_convergence(
-    convergence_history: List[float],
-    parameter_name: str = "Sharpe Ratio",
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot Bayesian optimization convergence.
-
-    Parameters
-    ----------
-    convergence_history : List[float]
-        Best score at each iteration
-    parameter_name : str
-        Name of optimized parameter
-    save_path : Optional[str]
-        Path to save figure
-
-    Examples
-    --------
-    >>> plot_optimization_convergence(result.convergence_history, "Sharpe Ratio")
-    """
-    logger = StructuredLogger(__name__)
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    iterations = np.arange(1, len(convergence_history) + 1)
-
-    ax.plot(iterations, convergence_history, linewidth=2, color='#2E86AB', marker='o', markersize=4)
-    ax.set_title(f'Bayesian Optimization Convergence - {parameter_name}', fontsize=14, fontweight='bold')
-    ax.set_xlabel('Iteration', fontsize=12)
-    ax.set_ylabel(f'Best {parameter_name}', fontsize=12)
-    ax.grid(True, alpha=0.3)
-
-    # Add final value annotation
-    final_value = convergence_history[-1]
-    ax.annotate(f'Final: {final_value:.4f}',
-               xy=(len(convergence_history), final_value),
-               xytext=(10, 10),
-               textcoords='offset points',
-               fontsize=10,
-               bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.7),
-               arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
-
-    plt.tight_layout()
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info("Optimization convergence plot saved", path=save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_var_distribution(
-    returns: pd.Series,
-    var_95: float,
-    var_99: float,
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot return distribution with VaR thresholds.
-
-    Parameters
-    ----------
-    returns : pd.Series
-        Return time series
-    var_95 : float
-        95% VaR threshold
-    var_99 : float
-        99% VaR threshold
-    save_path : Optional[str]
-        Path to save figure
-
-    Examples
-    --------
-    >>> plot_var_distribution(returns, var_95=0.02, var_99=0.03)
-    """
-    logger = StructuredLogger(__name__)
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-
-    # Histogram
-    ax.hist(returns, bins=50, density=True, alpha=0.7, color='#2E86AB', edgecolor='black')
-
-    # Fit normal distribution
-    mu, sigma = returns.mean(), returns.std()
-    x = np.linspace(returns.min(), returns.max(), 100)
-    ax.plot(x, 1/(sigma * np.sqrt(2 * np.pi)) * np.exp(-(x - mu)**2 / (2 * sigma**2)),
-           linewidth=2, color='red', label='Normal Fit')
-
-    # VaR lines
-    ax.axvline(x=-var_95, color='orange', linestyle='--', linewidth=2, label=f'95% VaR: {var_95:.2%}')
-    ax.axvline(x=-var_99, color='red', linestyle='--', linewidth=2, label=f'99% VaR: {var_99:.2%}')
-
-    ax.set_title('Return Distribution with VaR Thresholds', fontsize=14, fontweight='bold')
-    ax.set_xlabel('Daily Return', fontsize=12)
-    ax.set_ylabel('Density', fontsize=12)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info("VaR distribution plot saved", path=save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_correlation_matrix(
-    prices: pd.DataFrame,
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot asset correlation heatmap.
-
-    Parameters
-    ----------
-    prices : pd.DataFrame
-        Price data for assets
-    save_path : Optional[str]
-        Path to save figure
-
-    Examples
-    --------
-    >>> plot_correlation_matrix(prices)
-    """
-    logger = StructuredLogger(__name__)
-
-    # Calculate returns
-    returns = prices.pct_change().dropna()
-
-    # Correlation matrix
-    corr = returns.corr()
-
-    fig, ax = plt.subplots(figsize=(10, 8))
-
-    sns.heatmap(corr, annot=True, fmt='.2f', cmap='coolwarm', center=0,
-               square=True, linewidths=1, cbar_kws={"shrink": 0.8}, ax=ax)
-
-    ax.set_title('Asset Correlation Matrix', fontsize=14, fontweight='bold')
-
-    plt.tight_layout()
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info("Correlation matrix plot saved", path=save_path)
-        plt.close()
-    else:
-        plt.show()
-
-
-def plot_drawdown(
-    portfolio_value: pd.Series,
-    save_path: Optional[str] = None
-) -> None:
-    """
-    Plot drawdown over time.
-
-    Parameters
-    ----------
-    portfolio_value : pd.Series
-        Portfolio value time series
-    save_path : Optional[str]
-        Path to save figure
-
-    Examples
-    --------
-    >>> plot_drawdown(result.portfolio_value)
-    """
-    logger = StructuredLogger(__name__)
-
-    # Calculate drawdown
-    running_max = portfolio_value.expanding().max()
-    drawdown = (portfolio_value - running_max) / running_max
-
-    fig, ax = plt.subplots(figsize=(14, 6))
-
-    ax.fill_between(drawdown.index, 0, drawdown.values * 100, color='#D62828', alpha=0.5)
-    ax.plot(drawdown.index, drawdown.values * 100, linewidth=1.5, color='#D62828')
-
-    ax.set_title('Portfolio Drawdown', fontsize=14, fontweight='bold')
-    ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('Drawdown (%)', fontsize=12)
-    ax.grid(True, alpha=0.3)
-
-    # Annotate max drawdown
-    max_dd = drawdown.min()
-    max_dd_date = drawdown.idxmin()
-    ax.annotate(f'Max DD: {max_dd*100:.2f}%',
-               xy=(max_dd_date, max_dd*100),
-               xytext=(10, 10),
-               textcoords='offset points',
-               fontsize=10,
-               bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.7),
-               arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
-
-    plt.tight_layout()
-
-    if save_path:
-        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info("Drawdown plot saved", path=save_path)
-        plt.close()
-    else:
-        plt.show()
+        positions = np.arange(len(traded))
+        width = 0.4
+        ax.bar(positions - width / 2, traded["is_sharpe"].to_numpy(dtype=float), width, color=LIGHT_BLUE, label="in-sample Sharpe (formation window)")
+        ax.bar(positions + width / 2, traded["oos_sharpe"].to_numpy(dtype=float), width, color=BLUE, label="out-of-sample Sharpe (next window)")
+        ax.set_xticks(positions)
+        ax.set_xticklabels([pd.Timestamp(date).strftime("%Y-%m") for date in traded["trading_start"]], rotation=45, ha="right")
+        ax.axhline(0.0, color=GREY, lw=0.8)
+        ax.set_ylabel("annualised Sharpe")
+        ax.legend(frameon=False)
+        ax.grid(axis="y", alpha=0.3)
+    ax.set_title(f"{title}: in-sample vs out-of-sample Sharpe per traded fold")
+    return _save(fig, path)

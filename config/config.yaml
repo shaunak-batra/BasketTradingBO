@@ -1,0 +1,48 @@
+# Research protocol for BasketTradingBO.
+#
+# These values were fixed on 2026-09-11, before the corrected engine produced any
+# out-of-sample result. Changing them after looking at out-of-sample results would
+# turn the out-of-sample test into an in-sample fit.
+
+data:
+  snapshot_dir: data/snapshots
+  max_missing_fraction: 0.02   # fraction of dates that may be dropped when aligning tickers
+
+walk_forward:
+  formation_days: 504          # ~2 years: estimate cointegrating weights (and tune parameters)
+  trading_days: 126            # ~6 months: trade with weights and parameters frozen
+  significance: 0.05           # Johansen trace test level: 0.10, 0.05 or 0.01
+  det_order: 0                 # constant term in the VECM
+  k_ar_diff: 1                 # lagged differences in the VECM
+  require_cointegration: true  # a fold that fails the trace test is not traded
+  max_half_life_days: 126      # a fold whose in-sample half-life exceeds the trading window is not traded
+
+strategy:                      # fixed textbook thresholds for the non-optimised run
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 4.0
+  lookback: 60
+
+backtest:
+  initial_capital: 100000
+  gross_exposure: 1.0          # gross notional at entry, as a multiple of equity
+  cost_bps: 5.0                # commission + slippage + half-spread per side, on traded notional
+  borrow_bps_annual: 50.0      # stock-borrow fee on short notional
+  execution_lag: 1             # a signal at close t is filled at close t+1
+
+optimization:
+  n_calls: 40
+  n_initial_points: 12
+  min_trades: 3                # parameter sets with fewer in-sample round trips score 0 (no-trade baseline)
+  random_state: 42
+  space:
+    entry_z: [1.0, 3.0]
+    exit_fraction: [0.0, 0.8]  # exit_z = exit_fraction * entry_z
+    stop_offset: [0.5, 3.0]    # stop_z = entry_z + stop_offset
+    lookback: [20, 252]        # integer bounds give an integer dimension
+
+reporting:
+  cost_sensitivity_bps: [0.0, 5.0, 10.0, 20.0]
+  bootstrap_samples: 2000
+  bootstrap_block: 20
+  seed: 7

@@ -1,552 +1,183 @@
-"""
-Module: Market Data Adapter
+"""Daily adjusted close prices: download, align, validate and snapshot.
 
-Fetch, validate, and normalize financial time series data from multiple sources
-with automatic failover, retry logic, and corporate action adjustments.
-
-Classes
--------
-MarketDataAdapter
-    Main interface for fetching historical price data
-DataValidator
-    Validate data quality and handle anomalies
-ValidationReport
-    Container for validation results
-
-Notes
------
-Uses yfinance as primary data source with automatic retry logic (3 attempts,
-exponential backoff). All prices are adjusted for splits and dividends.
-
-Author: Quantitative Research Team
-Created: 2025-01-18
+Every run records the SHA-256 of the exact price file it used. Re-running from the
+snapshot reproduces results bit-for-bit. Re-downloading may not, because Yahoo
+revises dividend-adjusted history.
 """
 
+from __future__ import annotations
+
+import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
-from src.utils.config import ConfigManager
-from src.utils.exceptions import DataFetchException, DataQualityException, DataValidationException
-from src.utils.io import save_csv, save_parquet
-from src.utils.logger import StructuredLogger, timed_execution
+from src.utils.exceptions import DataError
+from src.utils.io import load_json, save_json, sha256_file
 
+logger = logging.getLogger(__name__)
 
-@dataclass
-class ValidationReport:
-    """
-    Container for data validation results.
-
-    Attributes
-    ----------
-    is_valid : bool
-        Whether data passes all validation checks
-    missing_ratio : float
-        Ratio of missing values
-    outlier_count : int
-        Number of outliers detected
-    discontinuities : List[Tuple[str, str, float]]
-        List of (ticker, date, price_jump) for discontinuities
-    warnings : List[str]
-        List of warning messages
-    errors : List[str]
-        List of error messages
-    """
-    is_valid: bool
-    missing_ratio: float
-    outlier_count: int
-    discontinuities: List[Tuple[str, str, float]]
-    warnings: List[str]
-    errors: List[str]
+Downloader = Callable[[str, str, str], pd.Series]
 
 
-class DataValidator:
-    """
-    Validate data quality and handle anomalies.
+@dataclass(frozen=True)
+class PriceData:
+    prices: pd.DataFrame
+    sha256: str
+    path: Path
+    source: str  # "download" or "snapshot"
+    metadata: dict
 
-    Methods
-    -------
-    check_missing_values(df, threshold)
-        Check if missing value ratio is below threshold
-    detect_outliers(df, method, threshold)
-        Detect outliers using z-score or IQR method
-    verify_trading_days(df)
-        Verify data has reasonable trading day coverage
-    check_price_continuity(df, threshold)
-        Check for suspicious price jumps
-    validate(df)
-        Run all validation checks and return report
-    """
 
-    def __init__(self, config: Optional[ConfigManager] = None):
-        """
-        Initialize validator.
+def download_adjusted_close(ticker: str, start: str, end: str, attempts: int = 3) -> pd.Series:
+    """Split/dividend-adjusted daily closes from Yahoo Finance. ``end`` is exclusive."""
+    import yfinance as yf  # imported lazily: tests and snapshot runs never need the network
 
-        Parameters
-        ----------
-        config : Optional[ConfigManager]
-            Configuration manager instance
-        """
-        self.logger = StructuredLogger(__name__)
-
-        if config is None:
-            config = ConfigManager.load_config()
-
-        self.max_missing_ratio = config.get("data.validation.max_missing_ratio", 0.10)
-        self.outlier_threshold = config.get("data.validation.outlier_zscore_threshold", 6.0)
-        self.price_jump_threshold = config.get("data.validation.price_jump_threshold", 0.25)
-
-    def check_missing_values(self, df: pd.DataFrame) -> Tuple[bool, float]:
-        """
-        Check if missing value ratio is below threshold.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Price data
-
-        Returns
-        -------
-        Tuple[bool, float]
-            (is_valid, missing_ratio)
-        """
-        total_values = df.size
-        missing_values = df.isnull().sum().sum()
-        missing_ratio = missing_values / total_values if total_values > 0 else 0.0
-
-        is_valid = missing_ratio <= self.max_missing_ratio
-
-        self.logger.info(
-            "Missing values check",
-            missing_values=missing_values,
-            total_values=total_values,
-            missing_ratio=round(missing_ratio, 4),
-            is_valid=is_valid
-        )
-
-        return is_valid, missing_ratio
-
-    def detect_outliers(
-        self,
-        df: pd.DataFrame,
-        method: str = "zscore"
-    ) -> Tuple[pd.DataFrame, int]:
-        """
-        Detect outliers using z-score method.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Price data
-        method : str
-            Detection method ('zscore' or 'iqr')
-
-        Returns
-        -------
-        Tuple[pd.DataFrame, int]
-            (outlier_mask, outlier_count)
-        """
-        if method == "zscore":
-            # Calculate returns
-            returns = df.pct_change()
-
-            # Calculate z-scores
-            z_scores = np.abs((returns - returns.mean()) / returns.std())
-
-            # Flag outliers
-            outliers = z_scores > self.outlier_threshold
-            outlier_count = outliers.sum().sum()
-
-        else:
-            raise ValueError(f"Unknown outlier detection method: {method}")
-
-        self.logger.info(
-            "Outlier detection",
-            method=method,
-            outlier_count=outlier_count,
-            threshold=self.outlier_threshold
-        )
-
-        return outliers, outlier_count
-
-    def check_price_continuity(
-        self,
-        df: pd.DataFrame
-    ) -> List[Tuple[str, str, float]]:
-        """
-        Check for suspicious price jumps.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Price data
-
-        Returns
-        -------
-        List[Tuple[str, str, float]]
-            List of (ticker, date, price_jump) for discontinuities
-        """
-        discontinuities = []
-
-        for col in df.columns:
-            returns = df[col].pct_change()
-
-            # Find large price jumps
-            large_jumps = returns[np.abs(returns) > self.price_jump_threshold]
-
-            for date, jump in large_jumps.items():
-                discontinuities.append((col, str(date), float(jump)))
-                self.logger.warning(
-                    "Price discontinuity detected",
-                    ticker=col,
-                    date=str(date),
-                    price_jump=round(jump, 4)
-                )
-
-        return discontinuities
-
-    def validate(self, df: pd.DataFrame) -> ValidationReport:
-        """
-        Run all validation checks.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Price data to validate
-
-        Returns
-        -------
-        ValidationReport
-            Validation results
-        """
-        warnings = []
-        errors = []
-
-        # Check missing values
-        missing_valid, missing_ratio = self.check_missing_values(df)
-        if not missing_valid:
-            errors.append(
-                f"Missing value ratio {missing_ratio:.2%} exceeds threshold {self.max_missing_ratio:.2%}"
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            raw = yf.download(
+                ticker, start=start, end=end, interval="1d", auto_adjust=True, progress=False, threads=False
             )
-
-        # Detect outliers
-        _, outlier_count = self.detect_outliers(df)
-        if outlier_count > 0:
-            warnings.append(f"Detected {outlier_count} outliers")
-
-        # Check price continuity
-        discontinuities = self.check_price_continuity(df)
-        if discontinuities:
-            warnings.append(f"Detected {len(discontinuities)} price discontinuities")
-
-        # Overall validity
-        is_valid = len(errors) == 0
-
-        return ValidationReport(
-            is_valid=is_valid,
-            missing_ratio=missing_ratio,
-            outlier_count=outlier_count,
-            discontinuities=discontinuities,
-            warnings=warnings,
-            errors=errors
-        )
+            if raw is not None and not raw.empty:
+                return _extract_close(raw, ticker)
+            last_error = DataError(f"Yahoo returned no rows for {ticker} between {start} and {end}")
+        except Exception as exc:  # network / parsing errors from yfinance
+            last_error = exc
+        if attempt < attempts:
+            time.sleep(2.0 * attempt)
+    raise DataError(f"Failed to download {ticker} after {attempts} attempts: {last_error}")
 
 
-class MarketDataAdapter:
+def _extract_close(raw: pd.DataFrame, ticker: str) -> pd.Series:
+    if "Close" not in raw.columns.get_level_values(0):
+        raise DataError(f"No 'Close' column in data for {ticker}")
+    close = raw["Close"]
+    if isinstance(close, pd.DataFrame):  # yfinance returns (field, ticker) MultiIndex columns
+        if close.shape[1] != 1:
+            raise DataError(f"Expected one Close column for {ticker}, got {close.shape[1]}")
+        close = close.iloc[:, 0]
+    index = pd.DatetimeIndex(close.index)
+    if index.tz is not None:
+        index = index.tz_localize(None)  # keep the exchange-local trading date
+    return pd.Series(close.to_numpy(dtype=float), index=index.normalize(), name=ticker)
+
+
+def align_prices(series: list[pd.Series], max_missing_fraction: float) -> tuple[pd.DataFrame, int]:
+    """Inner-join price series on dates.
+
+    Dates where any ticker is missing are dropped. If that removes more than
+    ``max_missing_fraction`` of all dates, a ticker probably does not cover the
+    requested window (e.g. a later IPO), and the caller must choose a valid window.
+    Missing prices are never forward-filled.
     """
-    Fetch historical price data from multiple sources with failover.
+    if len(series) < 2:
+        raise DataError("A basket needs at least two tickers")
+    names = [s.name for s in series]
+    if len(set(names)) != len(names):
+        raise DataError(f"Duplicate tickers: {names}")
+    for s in series:
+        if s.index.has_duplicates:
+            raise DataError(f"Duplicate dates in {s.name}")
+    combined = pd.concat(series, axis=1, join="outer").sort_index()
+    complete = combined.dropna(how="any")
+    dropped = len(combined) - len(complete)
+    fraction = dropped / len(combined) if len(combined) else 1.0
+    if fraction > max_missing_fraction:
+        first_dates = {s.name: str(s.dropna().index.min().date()) for s in series if not s.dropna().empty}
+        raise DataError(
+            f"Aligning tickers drops {dropped} of {len(combined)} dates ({fraction:.1%}), above the "
+            f"{max_missing_fraction:.1%} limit. First available date per ticker: {first_dates}"
+        )
+    complete.index.name = "date"
+    return complete, dropped
 
-    Attributes
-    ----------
-    primary_source : str
-        Primary data source ('yfinance')
-    cache_enabled : bool
-        Whether to use caching
-    adjustment_method : str
-        Price adjustment method ('back', 'forward', 'none')
 
-    Methods
-    -------
-    fetch_data(tickers, start_date, end_date, interval)
-        Fetch historical price data
-    validate_data(df)
-        Validate data quality
-    save_data(df, tickers, format)
-        Save data to disk
+def validate_prices(prices: pd.DataFrame, min_rows: int = 2) -> pd.DataFrame:
+    """Raise ``DataError`` unless prices are a clean, strictly positive, date-indexed panel."""
+    if not isinstance(prices, pd.DataFrame) or prices.shape[1] < 2:
+        raise DataError("prices must be a DataFrame with at least two columns")
+    if len(prices) < min_rows:
+        raise DataError(f"need at least {min_rows} rows, got {len(prices)}")
+    if not isinstance(prices.index, pd.DatetimeIndex):
+        raise DataError("prices must be indexed by date")
+    if prices.index.has_duplicates or not prices.index.is_monotonic_increasing:
+        raise DataError("price dates must be unique and increasing")
+    values = prices.to_numpy(dtype=float)
+    if not np.all(np.isfinite(values)):
+        raise DataError("prices contain NaN or infinite values")
+    if np.any(values <= 0):
+        raise DataError("prices must be strictly positive")
+    return prices
 
-    Examples
-    --------
-    >>> adapter = MarketDataAdapter()
-    >>> data = adapter.fetch_data(['AAPL', 'MSFT'], '2020-01-01', '2021-01-01')
-    >>> print(data.head())
+
+def suspicious_moves(prices: pd.DataFrame, threshold: float = 0.4) -> list[dict]:
+    """Daily log moves larger than ``threshold`` in absolute value (possible bad ticks)."""
+    log_returns = np.log(prices).diff().iloc[1:]
+    flagged = log_returns.abs().stack()
+    flagged = flagged[flagged > threshold]
+    return [
+        {"date": str(date.date()), "ticker": ticker, "log_return": float(log_returns.loc[date, ticker])}
+        for (date, ticker) in flagged.index
+    ]
+
+
+def snapshot_path(snapshot_dir: str | Path, tickers: list[str], start: str, end: str) -> Path:
+    return Path(snapshot_dir) / f"{'_'.join(tickers)}_{start}_{end}.csv"
+
+
+def load_prices(
+    tickers: list[str],
+    start: str,
+    end: str,
+    snapshot_dir: str | Path,
+    max_missing_fraction: float = 0.02,
+    refresh: bool = False,
+    downloader: Downloader = download_adjusted_close,
+) -> PriceData:
+    """Load prices from a local snapshot, or download and snapshot them.
+
+    The snapshot is a plain CSV written with round-trip float precision, so the
+    SHA-256 recorded in results identifies the exact input data.
     """
+    if len(tickers) < 2 or len(set(tickers)) != len(tickers):
+        raise DataError(f"need at least two distinct tickers, got {tickers}")
+    path = snapshot_path(snapshot_dir, tickers, start, end)
+    meta_path = path.with_suffix(".meta.json")
 
-    def __init__(self, config: Optional[ConfigManager] = None):
-        """
-        Initialize market data adapter.
+    if path.exists() and not refresh:
+        prices = pd.read_csv(path, index_col=0, parse_dates=True, float_precision="round_trip")
+        if list(prices.columns) != list(tickers):
+            raise DataError(f"Snapshot {path} has columns {list(prices.columns)}, expected {tickers}")
+        metadata = load_json(meta_path) if meta_path.exists() else {}
+        source = "snapshot"
+    else:
+        series = [downloader(ticker, start, end) for ticker in tickers]
+        prices, dropped = align_prices(series, max_missing_fraction)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        prices.to_csv(path, lineterminator="\n")  # identical bytes (and hash) on every OS
+        metadata = {
+            "tickers": tickers,
+            "start": start,
+            "end_exclusive": end,
+            "rows": len(prices),
+            "dropped_dates": dropped,
+            "downloaded_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "provider": "Yahoo Finance via yfinance (auto_adjust=True)",
+        }
+        save_json(metadata, meta_path)
+        source = "download"
+        # Re-read so downloaded and snapshot runs see identical floats.
+        prices = pd.read_csv(path, index_col=0, parse_dates=True, float_precision="round_trip")
 
-        Parameters
-        ----------
-        config : Optional[ConfigManager]
-            Configuration manager instance
-        """
-        self.logger = StructuredLogger(__name__)
-
-        if config is None:
-            config = ConfigManager.load_config()
-
-        self.config = config
-        self.primary_source = config.get("data.sources.primary", "yfinance")
-        self.max_retries = config.get("data.fetch_settings.max_retries", 3)
-        self.retry_delay = config.get("data.fetch_settings.retry_delay", 2.0)
-        self.timeout = config.get("data.fetch_settings.timeout", 30.0)
-
-        self.validator = DataValidator(config)
-
-        self.logger.info(
-            "MarketDataAdapter initialized",
-            primary_source=self.primary_source,
-            max_retries=self.max_retries
-        )
-
-    @timed_execution
-    def fetch_data(
-        self,
-        tickers: List[str],
-        start_date: str,
-        end_date: str,
-        interval: str = "1d"
-    ) -> pd.DataFrame:
-        """
-        Fetch historical price data with retry logic.
-
-        Parameters
-        ----------
-        tickers : List[str]
-            List of ticker symbols
-        start_date : str
-            Start date (YYYY-MM-DD)
-        end_date : str
-            End date (YYYY-MM-DD)
-        interval : str
-            Data interval ('1d', '1h', etc.)
-
-        Returns
-        -------
-        pd.DataFrame
-            Price data with tickers as columns
-
-        Raises
-        ------
-        DataFetchException
-            If data fetch fails after all retries
-
-        Examples
-        --------
-        >>> adapter = MarketDataAdapter()
-        >>> data = adapter.fetch_data(['AAPL', 'MSFT'], '2020-01-01', '2021-01-01')
-        """
-        self.logger.info(
-            "Fetching market data",
-            tickers=tickers,
-            start_date=start_date,
-            end_date=end_date,
-            interval=interval
-        )
-
-        for attempt in range(self.max_retries):
-            try:
-                # Fetch each ticker individually to avoid rate limiting
-                # then combine into single DataFrame
-                ticker_data = {}
-
-                for ticker in tickers:
-                    self.logger.info(f"Fetching data for {ticker}...")
-
-                    # Fetch single ticker
-                    data = yf.download(
-                        ticker,
-                        start=start_date,
-                        end=end_date,
-                        interval=interval,
-                        auto_adjust=True,
-                        progress=False
-                    )
-
-                    if data.empty or 'Close' not in data.columns:
-                        raise DataFetchException(
-                            f"No data returned for ticker {ticker}",
-                            context={"ticker": ticker, "start": start_date, "end": end_date}
-                        )
-
-                    ticker_data[ticker] = data['Close']
-
-                    # Small delay between requests to avoid rate limiting
-                    if len(tickers) > 1:
-                        time.sleep(0.5)
-
-                # Combine all ticker data into single DataFrame
-                # Use concat to properly align Series with potentially different indices
-                df = pd.concat(ticker_data, axis=1)
-
-                # Validate data is not empty
-                if df.empty:
-                    raise DataFetchException(
-                        "No data returned from yfinance",
-                        context={"tickers": tickers, "start": start_date, "end": end_date}
-                    )
-
-                # Validate minimum data points
-                if len(df) < 10:
-                    raise DataFetchException(
-                        f"Insufficient data points: {len(df)} < 10",
-                        context={"tickers": tickers, "start": start_date, "end": end_date}
-                    )
-
-                # Check for columns with all NaN
-                all_nan_cols = df.columns[df.isna().all()].tolist()
-                if all_nan_cols:
-                    raise DataFetchException(
-                        f"Tickers returned no data: {all_nan_cols}",
-                        context={"invalid_tickers": all_nan_cols}
-                    )
-
-                self.logger.info(
-                    "Data fetched successfully",
-                    rows=len(df),
-                    columns=len(df.columns),
-                    date_range=f"{df.index[0]} to {df.index[-1]}"
-                )
-
-                return df
-
-            except DataFetchException:
-                # Re-raise our own exceptions immediately
-                raise
-            except KeyError as e:
-                self.logger.warning(
-                    "Data fetch attempt failed - KeyError",
-                    attempt=attempt + 1,
-                    max_retries=self.max_retries,
-                    error=str(e)
-                )
-
-                if attempt < self.max_retries - 1:
-                    sleep_time = self.retry_delay * (2 ** attempt)
-                    self.logger.info(f"Retrying in {sleep_time}s...")
-                    time.sleep(sleep_time)
-                else:
-                    raise DataFetchException(
-                        f"Failed to fetch data after {self.max_retries} attempts - possible invalid tickers",
-                        context={"tickers": tickers, "error": str(e)}
-                    )
-            except Exception as e:
-                self.logger.warning(
-                    "Data fetch attempt failed",
-                    attempt=attempt + 1,
-                    max_retries=self.max_retries,
-                    error=str(e)
-                )
-
-                if attempt < self.max_retries - 1:
-                    # Exponential backoff
-                    sleep_time = self.retry_delay * (2 ** attempt)
-                    self.logger.info(f"Retrying in {sleep_time}s...")
-                    time.sleep(sleep_time)
-                else:
-                    raise DataFetchException(
-                        f"Failed to fetch data after {self.max_retries} attempts",
-                        context={"tickers": tickers, "error": str(e)}
-                    )
-
-    def validate_data(self, df: pd.DataFrame) -> ValidationReport:
-        """
-        Validate data quality.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Price data to validate
-
-        Returns
-        -------
-        ValidationReport
-            Validation results
-
-        Raises
-        ------
-        DataQualityException
-            If validation fails
-        """
-        report = self.validator.validate(df)
-
-        if not report.is_valid:
-            raise DataQualityException(
-                "Data validation failed",
-                context={
-                    "errors": report.errors,
-                    "missing_ratio": report.missing_ratio
-                }
-            )
-
-        if report.warnings:
-            self.logger.warning(
-                "Data validation warnings",
-                warnings=report.warnings
-            )
-
-        return report
-
-    def save_data(
-        self,
-        df: pd.DataFrame,
-        tickers: List[str],
-        format: str = "parquet"
-    ) -> Path:
-        """
-        Save data to disk.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Price data
-        tickers : List[str]
-            List of tickers
-        format : str
-            Output format ('parquet' or 'csv')
-
-        Returns
-        -------
-        Path
-            Path to saved file
-        """
-        # Create filename
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        tickers_str = "_".join(tickers[:3])  # Use first 3 tickers
-        if len(tickers) > 3:
-            tickers_str += f"_and_{len(tickers)-3}_more"
-
-        raw_data_path = self.config.get("data.storage.raw_data_path", "data/raw")
-        output_dir = Path(raw_data_path) / date_str
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        if format == "parquet":
-            file_path = output_dir / f"{tickers_str}.parquet"
-            save_parquet(df, file_path)
-        else:
-            file_path = output_dir / f"{tickers_str}.csv"
-            save_csv(df, file_path)
-
-        self.logger.info(
-            "Data saved",
-            file_path=str(file_path),
-            format=format
-        )
-
-        return file_path
+    validate_prices(prices)
+    moves = suspicious_moves(prices)
+    for move in moves:
+        logger.warning("Large daily move: %s %s log return %.3f", move["ticker"], move["date"], move["log_return"])
+    metadata = {**metadata, "suspicious_moves": moves}
+    return PriceData(prices=prices, sha256=sha256_file(path), path=path, source=source, metadata=metadata)

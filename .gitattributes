@@ -1,0 +1,5 @@
+# Keep line endings stable across machines: generated results and docs are rewritten
+# by scripts, and a checkout that flipped them would produce whole-file diffs.
+* text=auto eol=lf
+
+*.png binary

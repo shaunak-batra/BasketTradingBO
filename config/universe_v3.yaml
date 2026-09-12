@@ -1,0 +1,41 @@
+# Evaluation universe for v3.0. Frozen on 2026-09-11, before any v3 result existed.
+#
+# Why a new universe: every v3 rule was chosen after looking at v2's out-of-sample results,
+# so those five baskets are design data and cannot also be the test. None of their tickers
+# (JPM BAC C WFC XOM CVX KO PEP EWA EWC TSLA NFLX PLTR) appears here.
+#
+# Why ETFs: Yahoo carries no delisted securities, so any single-name universe would be
+# survivorship-biased. Exchange-traded funds are not immune (funds do close) but the bias is
+# far smaller, and these are all large, liquid and still trading.
+#
+# Selection rule, fixed in advance: every unordered pair inside each family, no pair across
+# families. Families group instruments with a shared economic driver, which is the only
+# reason to expect a stationary spread. Two families are positive controls: GLD/IAU and
+# SPY/IVV track the same underlying, so the machinery should find them cointegrated. If it
+# does not, the pipeline is broken rather than the strategy.
+
+evaluation:
+  start: "2010-01-01"
+  end: "2025-01-01"           # exclusive
+  min_bars: 1000              # a pair needs this much overlapping history to be evaluated
+  fdr_level: 0.10             # Benjamini-Hochberg level applied to 1 - PSR across all pairs
+  snapshot_name: universe_v3
+
+families:
+  broad_us_equity: [SPY, IVV, DIA, IWM, QQQ]          # SPY/IVV is a positive control
+  precious_metals: [GLD, IAU, GDX, GDXJ]              # GLD/IAU is a positive control
+  us_banks: [KBE, KRE, XLF, IAI]
+  energy: [XLE, XOP, IYE]
+  semiconductors: [SMH, SOXX, XSD]
+  homebuilders: [ITB, XHB]
+  real_estate: [VNQ, IYR, RWR]
+  utilities: [XLU, IDU]
+  consumer_staples: [XLP, VDC]
+  healthcare: [XLV, IYH]
+  industrials: [XLI, IYJ]
+  technology: [XLK, IYW]
+  developed_europe: [EWG, EWU, EWQ, EWL]
+  developed_asia: [EWJ, EWY, EWT, EWH, EWS]
+  latin_america: [EWZ, EWW]
+  treasuries: [TLT, IEF, SHY]
+  credit: [LQD, HYG, JNK]

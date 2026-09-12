@@ -1,0 +1,360 @@
+{
+  "schema_version": 1,
+  "run": {
+    "tickers": [
+      "TSLA",
+      "NFLX",
+      "PLTR"
+    ],
+    "start": "2020-10-01",
+    "end_exclusive": "2025-01-01",
+    "mode": "optimized",
+    "created_utc": "2026-09-11T23:39:30+00:00",
+    "git": {
+      "commit": "65cd52cb9b402af0cb2c703e557099266999bf28",
+      "dirty": true
+    },
+    "python": "3.10.11",
+    "packages": {
+      "numpy": "1.24.3",
+      "pandas": "2.0.3",
+      "scipy": "1.11.2",
+      "statsmodels": "0.14.0",
+      "scikit-optimize": "0.10.2",
+      "scikit-learn": "1.3.0",
+      "yfinance": "0.2.66",
+      "matplotlib": "3.7.2"
+    },
+    "command": "python scripts/run_case_studies.py --only control_tsla_nflx_pltr --modes optimized"
+  },
+  "protocol": {
+    "path": "config/config.yaml",
+    "sha256": "23f85374f30bb0c83cd9b876dd88aa8d41da9055559d08ce09ebe1dd0100ae7a",
+    "data": {
+      "snapshot_dir": "data/snapshots",
+      "max_missing_fraction": 0.02
+    },
+    "walk_forward": {
+      "formation_days": 504,
+      "trading_days": 126,
+      "significance": 0.05,
+      "det_order": 0,
+      "k_ar_diff": 1,
+      "require_cointegration": true,
+      "max_half_life_days": 126
+    },
+    "strategy": {
+      "entry_z": 2.0,
+      "exit_z": 0.5,
+      "stop_z": 4.0,
+      "lookback": 60
+    },
+    "backtest": {
+      "initial_capital": 100000,
+      "gross_exposure": 1.0,
+      "cost_bps": 5.0,
+      "borrow_bps_annual": 50.0,
+      "execution_lag": 1
+    },
+    "optimization": {
+      "space": {
+        "entry_z": [
+          1.0,
+          3.0
+        ],
+        "exit_fraction": [
+          0.0,
+          0.8
+        ],
+        "stop_offset": [
+          0.5,
+          3.0
+        ],
+        "lookback": [
+          20,
+          252
+        ]
+      },
+      "n_calls": 40,
+      "n_initial_points": 12,
+      "min_trades": 3,
+      "random_state": 42
+    },
+    "reporting": {
+      "cost_sensitivity_bps": [
+        0.0,
+        5.0,
+        10.0,
+        20.0
+      ],
+      "bootstrap_samples": 2000,
+      "bootstrap_block": 20,
+      "seed": 7
+    }
+  },
+  "data": {
+    "source": "snapshot",
+    "path": "data/snapshots/TSLA_NFLX_PLTR_2020-10-01_2025-01-01.csv",
+    "sha256": "3e50a7c6557a364cb9e3b28b4fb32087b69fd5f7813d8d1030ef5daff3999fb7",
+    "rows": 1069,
+    "first_date": "2020-10-01T00:00:00",
+    "last_date": "2024-12-31T00:00:00",
+    "provenance": {
+      "tickers": [
+        "TSLA",
+        "NFLX",
+        "PLTR"
+      ],
+      "start": "2020-10-01",
+      "end_exclusive": "2025-01-01",
+      "rows": 1069,
+      "dropped_dates": 0,
+      "downloaded_at_utc": "2026-09-11T19:17:14+00:00",
+      "provider": "Yahoo Finance via yfinance (auto_adjust=True)",
+      "suspicious_moves": [
+        {
+          "date": "2022-04-20",
+          "ticker": "NFLX",
+          "log_return": -0.43257848949508704
+        }
+      ]
+    }
+  },
+  "folds_summary": {
+    "n_folds": 5,
+    "n_traded": 3,
+    "n_not_cointegrated": 2,
+    "n_half_life_too_long": 0,
+    "n_no_in_sample_edge": 0
+  },
+  "out_of_sample": {
+    "start": "2022-10-03T00:00:00",
+    "end": "2024-12-31T00:00:00",
+    "n_days": 564,
+    "total_return": -0.015403100488199595,
+    "cagr": -0.00691179384047691,
+    "ann_volatility": 0.1388021980835409,
+    "sharpe": 0.02016359689808447,
+    "sharpe_ci_low": -0.9426165000887093,
+    "sharpe_ci_high": 1.547934408351239,
+    "psr": 0.5120071652276071,
+    "sortino": 0.026828100985705695,
+    "max_drawdown": -0.2137866322235551,
+    "max_drawdown_days": 236,
+    "calmar": -0.03233033688116336,
+    "skewness": -1.8988519071977348,
+    "kurtosis": 33.299931499525826,
+    "time_in_market": 0.21415929203539824,
+    "avg_gross_exposure_when_invested": 1.1021421438826982,
+    "turnover_annual": 7.322890213868803,
+    "total_trading_cost": 782.0517803546209,
+    "total_borrow_cost": 89.60647169049626,
+    "n_trades": 8,
+    "win_rate": 0.75,
+    "profit_factor": 0.9214654690098436,
+    "avg_trade_return": -7.683746243516282e-05,
+    "avg_holding_days": 15.125,
+    "n_stop_losses": 1
+  },
+  "cost_sensitivity": [
+    {
+      "cost_bps": 0.0,
+      "total_return": -0.0073328499085594245,
+      "sharpe": 0.04637997392466291,
+      "max_drawdown": -0.2136829099590415
+    },
+    {
+      "cost_bps": 5.0,
+      "total_return": -0.015403100488199595,
+      "sharpe": 0.02016359689808447,
+      "max_drawdown": -0.2137866322235551
+    },
+    {
+      "cost_bps": 10.0,
+      "total_return": -0.023415915374853324,
+      "sharpe": -0.006031859053957649,
+      "max_drawdown": -0.21389045523110684
+    },
+    {
+      "cost_bps": 20.0,
+      "total_return": -0.03927063845997458,
+      "sharpe": -0.05833067189483273,
+      "max_drawdown": -0.21409840406299285
+    }
+  ],
+  "risk": [
+    {
+      "method": "historical",
+      "confidence": 0.95,
+      "var": 0.010770755525185301,
+      "expected_shortfall": 0.022654820432243532
+    },
+    {
+      "method": "parametric",
+      "confidence": 0.95,
+      "var": 0.014371027819546398,
+      "expected_shortfall": 0.018024670076599386
+    },
+    {
+      "method": "cornish_fisher",
+      "confidence": 0.95,
+      "var": 0.01315183441719689,
+      "expected_shortfall": null
+    },
+    {
+      "method": "historical",
+      "confidence": 0.99,
+      "var": 0.028559849927005387,
+      "expected_shortfall": 0.047513866848504394
+    },
+    {
+      "method": "parametric",
+      "confidence": 0.99,
+      "var": 0.020329820386437984,
+      "expected_shortfall": 0.023292771686695905
+    },
+    {
+      "method": "cornish_fisher",
+      "confidence": 0.99,
+      "var": 0.08261192550110084,
+      "expected_shortfall": null
+    }
+  ],
+  "folds": [
+    {
+      "fold": 0,
+      "formation_start": "2020-10-01T00:00:00",
+      "formation_end": "2022-09-30T00:00:00",
+      "trading_start": "2022-10-03T00:00:00",
+      "trading_end": "2023-04-03T00:00:00",
+      "trace_stat": 31.811601609039553,
+      "trace_critical": 29.7961,
+      "cointegrated": true,
+      "half_life_days": 28.78845870509108,
+      "traded": true,
+      "skip_reason": "",
+      "weight_TSLA": 0.5836238312706015,
+      "weight_NFLX": -0.19247426700885414,
+      "weight_PLTR": 0.22390190172054442,
+      "entry_z": 1.0,
+      "exit_z": 0.6899369611396065,
+      "stop_z": 1.7352829428794225,
+      "lookback": 160.0,
+      "n_trials": 40,
+      "is_sharpe": 1.7285829792464793,
+      "is_trades": 14,
+      "is_deflated_sharpe": 0.7913759934247777,
+      "oos_return": -0.002264809193570305,
+      "oos_sharpe": -1.1550998564557666e-05,
+      "oos_trades": 2
+    },
+    {
+      "fold": 1,
+      "formation_start": "2021-04-05T00:00:00",
+      "formation_end": "2023-04-03T00:00:00",
+      "trading_start": "2023-04-04T00:00:00",
+      "trading_end": "2023-10-03T00:00:00",
+      "trace_stat": 22.339908167717223,
+      "trace_critical": 29.7961,
+      "cointegrated": false,
+      "half_life_days": 59.2651627980672,
+      "traded": false,
+      "skip_reason": "not cointegrated (trace 22.34 <= critical 29.80)",
+      "weight_TSLA": 0.5889704594644407,
+      "weight_NFLX": 0.2474809672175106,
+      "weight_PLTR": -0.16354857331804876,
+      "entry_z": null,
+      "exit_z": null,
+      "stop_z": null,
+      "lookback": null,
+      "n_trials": 0,
+      "is_sharpe": null,
+      "is_trades": 0,
+      "is_deflated_sharpe": null,
+      "oos_return": 0.0,
+      "oos_sharpe": null,
+      "oos_trades": 0
+    },
+    {
+      "fold": 2,
+      "formation_start": "2021-10-01T00:00:00",
+      "formation_end": "2023-10-03T00:00:00",
+      "trading_start": "2023-10-04T00:00:00",
+      "trading_end": "2024-04-04T00:00:00",
+      "trace_stat": 32.34854597352543,
+      "trace_critical": 29.7961,
+      "cointegrated": true,
+      "half_life_days": 29.706423851934904,
+      "traded": true,
+      "skip_reason": "",
+      "weight_TSLA": 0.4680913531493513,
+      "weight_NFLX": 0.21354166396321825,
+      "weight_PLTR": -0.31836698288743054,
+      "entry_z": 1.061429378857408,
+      "exit_z": 0.20187847830732575,
+      "stop_z": 3.5503785615433836,
+      "lookback": 170.0,
+      "n_trials": 40,
+      "is_sharpe": 1.7782009371024166,
+      "is_trades": 7,
+      "is_deflated_sharpe": 0.6750529221133927,
+      "oos_return": -0.09565898298285191,
+      "oos_sharpe": -0.6825384373897035,
+      "oos_trades": 2
+    },
+    {
+      "fold": 3,
+      "formation_start": "2022-04-01T00:00:00",
+      "formation_end": "2024-04-04T00:00:00",
+      "trading_start": "2024-04-05T00:00:00",
+      "trading_end": "2024-10-03T00:00:00",
+      "trace_stat": 25.873989227756056,
+      "trace_critical": 29.7961,
+      "cointegrated": false,
+      "half_life_days": 18.485357265731096,
+      "traded": false,
+      "skip_reason": "not cointegrated (trace 25.87 <= critical 29.80)",
+      "weight_TSLA": 0.4656682831275821,
+      "weight_NFLX": 0.29879543948363313,
+      "weight_PLTR": -0.23553627738878485,
+      "entry_z": null,
+      "exit_z": null,
+      "stop_z": null,
+      "lookback": null,
+      "n_trials": 0,
+      "is_sharpe": null,
+      "is_trades": 0,
+      "is_deflated_sharpe": null,
+      "oos_return": 0.0,
+      "oos_sharpe": null,
+      "oos_trades": 0
+    },
+    {
+      "fold": 4,
+      "formation_start": "2022-10-03T00:00:00",
+      "formation_end": "2024-10-03T00:00:00",
+      "trading_start": "2024-10-04T00:00:00",
+      "trading_end": "2024-12-31T00:00:00",
+      "trace_stat": 32.55766956554338,
+      "trace_critical": 29.7961,
+      "cointegrated": true,
+      "half_life_days": 10.11432648054639,
+      "traded": true,
+      "skip_reason": "",
+      "weight_TSLA": 0.22053554328083336,
+      "weight_NFLX": 0.48150536104246777,
+      "weight_PLTR": -0.29795909567669876,
+      "entry_z": 1.0,
+      "exit_z": 0.6478140619051985,
+      "stop_z": 4.0,
+      "lookback": 126.0,
+      "n_trials": 40,
+      "is_sharpe": 2.1640150284448882,
+      "is_trades": 18,
+      "is_deflated_sharpe": 0.9682023967955339,
+      "oos_return": 0.09121655091282599,
+      "oos_sharpe": 2.1458203674230427,
+      "oos_trades": 4
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+# Pre-registered case studies, fixed on 2026-09-11 together with config/config.yaml and
+# before the corrected engine produced any result. Each basket has an economic reason to
+# expect a shared long-run driver; the last one is a deliberate control without one.
+
+baskets:
+  - name: us_money_center_banks
+    tickers: [JPM, BAC, C, WFC]
+    start: "2010-01-01"
+    end: "2025-01-01"
+    rationale: Large US deposit-taking banks exposed to the same rates, credit cycle and regulation.
+
+  - name: integrated_oil_xom_cvx
+    tickers: [XOM, CVX]
+    start: "2010-01-01"
+    end: "2025-01-01"
+    rationale: The two largest US integrated oil companies, both driven by crude prices and refining margins.
+
+  - name: consumer_staples_ko_pep
+    tickers: [KO, PEP]
+    start: "2010-01-01"
+    end: "2025-01-01"
+    rationale: Global beverage and snack franchises with similar defensive demand.
+
+  - name: commodity_countries_ewa_ewc
+    tickers: [EWA, EWC]
+    start: "2010-01-01"
+    end: "2025-01-01"
+    rationale: Australia and Canada equity ETFs, both commodity-exporting economies (a textbook pair).
+
+  - name: control_tsla_nflx_pltr
+    tickers: [TSLA, NFLX, PLTR]
+    start: "2020-10-01"
+    end: "2025-01-01"
+    rationale: Control basket with no shared economic driver (the original v1 case study).

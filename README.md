@@ -1,1315 +1,496 @@
-# Statistical Arbitrage Basket Trading with Bayesian Optimization
+# BasketTradingBO
 
-A production-grade quantitative trading system that exploits mean-reverting relationships in cointegrated asset baskets. This framework combines rigorous econometric testing (Johansen cointegration), Ornstein-Uhlenbeck process modeling, and hyperparameter optimization via Gaussian Process-based Bayesian optimization.
+I wanted to know whether a classic statistical arbitrage idea actually makes money: find groups of
+stocks or funds whose prices move together in the long run, trade the gaps when they open up, and
+collect when they close. This repo is my attempt to answer that honestly, with a backtest that is hard
+to fool.
 
-## Table of Contents
+The answer turned out to be no, and I think the reason is more interesting than a yes would have been.
+At daily frequency, the spreads that are genuinely stable are worth about half a basis point per trade,
+and it costs about ten basis points to trade them.
 
-- [Overview](#overview)
-- [Mathematical Foundation](#mathematical-foundation)
-  - [Cointegration Theory](#cointegration-theory)
-  - [Spread Construction and Ornstein-Uhlenbeck Process](#spread-construction-and-ornstein-uhlenbeck-process)
-  - [Signal Generation via Z-Score](#signal-generation-via-z-score)
-  - [Bayesian Optimization](#bayesian-optimization)
-  - [Risk Management](#risk-management)
-- [Implementation Details](#implementation-details)
-- [Case Study: TSLA-NFLX-PLTR Basket](#case-study-tsla-nflx-pltr-basket)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Further Implementation Ideas](#further-implementation-ideas)
-- [References and Resources](#references-and-resources)
+Everything below is out of sample, after costs, and reproducible from the code and the price snapshots
+recorded in each result file.
 
----
+## Contents
 
-## Overview
+- [The short version](#the-short-version)
+- [What the strategy is trying to do](#what-the-strategy-is-trying-to-do)
+- [The bug that made me rebuild everything](#the-bug-that-made-me-rebuild-everything)
+- [How I test it now](#how-i-test-it-now)
+- [Round one: five baskets I picked myself](#round-one-five-baskets-i-picked-myself)
+- [What I changed after that](#what-i-changed-after-that)
+- [Round two: sixty pairs I did not pick](#round-two-sixty-pairs-i-did-not-pick)
+- [What I take away from this](#what-i-take-away-from-this)
+- [Running it](#running-it)
+- [How it is tested](#how-it-is-tested)
+- [What is in the repo](#what-is-in-the-repo)
+- [Things this does not do](#things-this-does-not-do)
+- [Where I would go next](#where-i-would-go-next)
+- [References](#references)
 
-This system implements a mean-reversion statistical arbitrage strategy on cointegrated baskets of equities. The core workflow involves:
+## The short version
 
-1. **Cointegration Testing**: Johansen trace test to identify long-run equilibrium relationships
-2. **Spread Construction**: Weighted linear combination of log prices using eigenvectors
-3. **Mean Reversion Modeling**: Ornstein-Uhlenbeck process characterization (half-life, Hurst exponent)
-4. **Signal Generation**: Threshold-based state machine with z-score normalization
-5. **Hyperparameter Optimization**: Bayesian optimization (Gaussian Process + Expected Improvement)
-6. **Risk Management**: VaR/CVaR analysis using historical, parametric, and Cornish-Fisher methods
-7. **Backtesting**: Transaction cost modeling with slippage and commission
+I built a walk-forward research framework for cointegration pairs and baskets: Johansen tests for the
+relationship, a z-score state machine for the signals, a backtester that tracks cash properly, and
+Bayesian optimisation for the thresholds. Then I tested it twice.
 
-The system is built with production considerations: caching (HDF5/Parquet), structured logging, comprehensive unit tests, and modular architecture.
+**Round one** was five baskets I chose myself, over 2012 to 2024. Nothing was statistically
+distinguishable from zero. The worst losses came from baskets that were not actually hedged.
 
----
+**Round two** was sixty ETF pairs chosen by a rule I fixed in advance, with two pairs thrown in as
+controls because they track the same thing and must be cointegrated. Zero of the sixty survived a
+false-discovery correction. The two controls traded more often than any real candidate, which told me
+the machinery works, and they were also the two worst performers, which told me why the whole idea
+fails: they earned 0.5 basis points per trade and paid 10.
 
-## Mathematical Foundation
+I also found and fixed a bug in my own first version that had been inventing profits. That story is in
+[docs/AUDIT.md](docs/AUDIT.md) and it is the part I would want to be asked about.
 
-### Cointegration Theory
+## What the strategy is trying to do
 
-**Definition**: Two or more non-stationary time series are cointegrated if a linear combination of them is stationary.
+Two things that are economically linked, say Australia and Canada country funds, tend to wander apart
+and come back. Correlation is not enough for this, because two prices can move together every day and
+still drift apart forever. What you need is cointegration: some fixed combination of the prices that
+is stationary, meaning it has a stable average to revert to.
 
-For price series **P** = [P₁, P₂, ..., Pₙ], we seek a cointegrating vector **β** such that:
+I use the Johansen test on log prices to find that combination. It gives me a weight per asset, and the
+weighted sum of log prices is what I call the spread:
 
-```
-S_t = β₁·log(P₁,t) + β₂·log(P₂,t) + ... + βₙ·log(Pₙ,t)
-```
-
-where S_t is stationary (mean-reverting).
-
-**Johansen Test**:
-
-The Johansen procedure tests the rank of the cointegrating matrix using a Vector Error Correction Model (VECM):
-
-```
-ΔX_t = Π·X_{t-1} + Γ₁·ΔX_{t-1} + ... + Γ_{k-1}·ΔX_{t-k+1} + ε_t
-```
-
-where Π = α·β' (α = adjustment coefficients, β = cointegrating vectors).
-
-The trace statistic tests H₀: rank(Π) ≤ r vs H₁: rank(Π) > r:
-
-```
-λ_trace(r) = -T · Σ_{i=r+1}^n ln(1 - λ_i)
+```math
+S_t = \sum_i w_i \log P_{i,t}, \qquad \sum_i |w_i| = 1
 ```
 
-where λ_i are eigenvalues of Π, sorted in descending order.
+Log prices are deliberate. With logs, a weight is directly a dollar allocation, so the statistics and
+the trading agree with each other. My first version tested raw prices and then traded log prices, which
+is one of the things that was wrong with it.
 
-**Implementation**:
+Then I standardise the spread into a z-score over a trailing window and trade the extremes:
+
+| From | To | When |
+|---|---|---|
+| flat | long the spread | z drops to -2 (and is not already past -4) |
+| flat | short the spread | z rises to +2 (and is not already past +4) |
+| long | flat | z comes back to -0.5, or falls to -4 (stop) |
+| short | flat | z comes back to +0.5, or rises to +4 (stop) |
+
+Here is what that looks like on real data. Green triangles are long entries, red are shorts, and the
+grey bands are windows where the test said the pair was not cointegrated so nothing was traded:
+
+![Spread z-score with thresholds](results/case_studies/commodity_countries_ewa_ewc/optimized/plots/zscore.png)
+
+The thresholds change between windows in that picture because this was the run where I let Bayesian
+optimisation choose them. More on how that went later.
+
+## The bug that made me rebuild everything
+
+My first version reported a Sharpe ratio, a drawdown, an optimiser that had "found" good parameters,
+and a case study explaining the results. All of it was fiction, and here is the line that did it:
 
 ```python
-# From src/cointegration/engine.py
-def test_cointegration(self, prices: pd.DataFrame) -> CointegrationResult:
-    # Convert deterministic term to integer
-    det_order_map = {"nc": -1, "c": 0, "ct": 1, "ctt": 2}
-    det_order = det_order_map.get(self.deterministic_term, 0)
-
-    # Run Johansen test
-    result = coint_johansen(prices, det_order=det_order, k_ar_diff=1)
-
-    # Extract trace statistics and critical values
-    test_stats = result.lr1  # Trace statistic
-    critical_vals = result.cvt  # Critical values for trace
-
-    # Determine cointegrating rank
-    sig_level_idx = {0.10: 0, 0.05: 1, 0.01: 2}.get(self.significance_level, 1)
-
-    cointegrating_rank = 0
-    for i in range(len(test_stats)):
-        if test_stats[i] > critical_vals[i, sig_level_idx]:
-            cointegrating_rank = i + 1
-        else:
-            break
-
-    # Eigenvectors represent cointegrating relationships
-    eigenvectors = result.evec
-    eigenvalues = result.eig
+portfolio_value = self.initial_capital + position_values - cumulative_costs
 ```
 
-The first eigenvector (corresponding to the largest eigenvalue) represents the strongest cointegrating relationship and is used as the basket weights.
+That adds the market value of whatever I am holding to my capital. But buying something is an exchange,
+not a gain: cash goes out, shares come in, and equity should not move. With that formula, opening a
+position instantly changed my equity by the value of the position, and closing it snapped equity back to
+capital minus costs. No trade could ever record a real profit or loss.
 
----
+I found it by running the simplest test I could think of. Hold prices completely flat, open a position,
+close it. Nothing should happen except costs. Instead equity jumped from 100,000 to 106,570 on entry and
+came back to 99,940 at exit. That test is now in the suite permanently.
 
-### Spread Construction and Ornstein-Uhlenbeck Process
+The fix is to only let equity move when something real happens:
 
-Once we have the cointegrating vector **β**, the spread is:
-
-```
-S_t = β' · log(P_t)
-```
-
-We model the spread as an Ornstein-Uhlenbeck (OU) process:
-
-```
-dS_t = θ(μ - S_t)dt + σ·dW_t
-```
-
-where:
-- θ > 0: mean reversion speed
-- μ: long-term mean
-- σ: volatility
-- W_t: Wiener process
-
-**Half-Life Estimation**:
-
-The half-life τ represents the expected time for the spread to revert halfway to its mean:
-
-```
-τ = -ln(2) / θ
+```math
+E_t = E_{t-1} + \underbrace{q_{t-1}\cdot(P_t - P_{t-1})}_{\text{today's P\&L on yesterday's shares}}
+      - \underbrace{\tfrac{b}{252}\sum_i \max(-q_{t-1,i},0)\,P_{t-1,i}}_{\text{cost of borrowing the shorts}}
+      - \underbrace{c\sum_i |\Delta q_{t,i}|\,P_{t,i}}_{\text{cost of trading}}
 ```
 
-To estimate θ, we run OLS regression:
+While I was in there I found nine more problems, including a pipeline that quietly substituted
+hardcoded weights whenever the cointegration test failed, and a "trade count" that was really counting
+days. [docs/AUDIT.md](docs/AUDIT.md) lists all thirteen, each with the evidence and the test that now
+stops it from coming back.
 
-```
-ΔS_t = α + θ·S_{t-1} + ε_t
-```
+The general lesson I took: a backtest that runs is not a backtest that works. Test the accounting
+identities, not just the happy path.
 
-**Implementation**:
+## How I test it now
 
-```python
-# From src/cointegration/spread.py
-def calculate_half_life(self, spread: pd.Series) -> float:
-    # Calculate lagged spread and differences
-    spread_lag = spread.shift(1)
-    spread_diff = spread.diff()
+The whole design is built around not fooling myself.
 
-    # Drop NaN values
-    df = pd.DataFrame({
-        'spread_lag': spread_lag,
-        'spread_diff': spread_diff
-    }).dropna()
+**Estimate on the past, trade the future.** Every six months of trading gets its own two years of
+history beforehand. The cointegration test, the weights, the half-life, and the parameters all come
+from those two years. Then the settings are frozen and the next six months are traded blind. Windows
+never overlap, and equity carries across, so the whole thing stitches into one continuous track record.
 
-    # OLS regression: Δspread = α + θ*spread_lag
-    model = LinearRegression()
-    model.fit(df[['spread_lag']], df['spread_diff'])
-
-    theta = model.coef_[0]
-
-    if theta >= 0:
-        raise ValueError(f"No mean reversion detected: θ = {theta:.4f} ≥ 0")
-
-    half_life = -np.log(2) / theta
-    return half_life
+```mermaid
+flowchart LR
+    D["Price snapshot<br/>(SHA-256 recorded)"] --> F
+    subgraph F["Each fold"]
+        direction LR
+        W["504 days of history"] --> J["Johansen test<br/>on log prices"]
+        J --> H["Filters: cointegrated?<br/>hedged? reverting fast enough?"]
+        H --> P["Pick thresholds<br/>(fixed, or tuned on this window only)"]
+        P --> T["Trade the next 126 days<br/>with everything frozen"]
+    end
+    F --> E["Stitched out-of-sample equity"]
+    E --> S["Sharpe, bootstrap interval, PSR,<br/>cost sensitivity, report"]
 ```
 
-**Hurst Exponent**:
+**Signals cannot see the bar they trade on.** A signal computed at today's close is filled at
+tomorrow's close. The z-score uses a trailing window with no partial windows at the start. There are
+tests that take random prices, shock everything after a random date, and assert that nothing before
+that date moved by a single floating point bit.
 
-The Hurst exponent H characterizes the time series behavior:
-- H < 0.5: Mean-reverting (anti-persistent)
-- H = 0.5: Random walk (Brownian motion)
-- H > 0.5: Trending (persistent)
+**Costs are real.** Five basis points a side, which is reasonable for liquid funds, plus fifty basis
+points a year to borrow the short leg. Every run is also replayed at zero, ten and twenty basis points
+so the cost assumption is visible rather than buried.
 
-```python
-# From src/cointegration/spread.py
-def calculate_hurst_exponent(self, spread: pd.Series, max_lag: int = 100) -> float:
-    lags = range(2, min(max_lag, len(spread) // 2))
-    tau = []
+**Decide what counts as success before running.** The protocol lives in a config file
+([config/config.yaml](config/config.yaml)), the SHA-256 of that file goes into every result, and the
+baskets were chosen and written down before anything was run. That is the only way "out of sample"
+means anything.
 
-    for lag in lags:
-        # Calculate standard deviation of differences
-        std = np.std([spread[i] - spread[i - lag] for i in range(lag, len(spread))])
-        tau.append(std)
+**Judge significance properly.** A single Sharpe ratio on a few trades tells you nothing. I report a
+95% block bootstrap interval, the probabilistic Sharpe ratio (the chance the true Sharpe is above zero,
+given how skewed and fat-tailed the returns are), and when parameters are tuned, the deflated Sharpe
+ratio, which accounts for having tried many parameter sets.
 
-    # Linear regression of log(tau) on log(lags)
-    # tau ∝ lag^H  =>  log(tau) = H·log(lag) + c
-    model = LinearRegression()
-    model.fit(np.log(list(lags)).reshape(-1, 1), np.log(tau))
+## Round one: five baskets I picked myself
 
-    hurst = model.coef_[0]
-    return hurst
-```
+Four with an economic reason to expect a relationship, and one deliberate control with no reason at all.
+Both modes: fixed textbook thresholds, and thresholds tuned per window by Bayesian optimisation.
 
----
+<!-- CASE_STUDY_RESULTS:START -->
+| Basket | Mode | Out-of-sample | Folds traded | Closed trades | Total return | CAGR | Sharpe [95% CI] | PSR | Max drawdown | Sharpe at 0 / 20 bps |
+|---|---|---|---|---|---|---|---|---|---|---|
+| [JPM / BAC / C / WFC](results/case_studies/us_money_center_banks/fixed) | fixed | 2012-01 to 2024-12 | 1/26 | 3 | -0.6% | -0.1% | -0.05 [-0.47, 0.53] | 0.42 | -3.0% | -0.03 / -0.13 |
+| [JPM / BAC / C / WFC](results/case_studies/us_money_center_banks/optimized) | optimized | 2012-01 to 2024-12 | 1/26 | 3 | -0.1% | -0.0% | -0.01 [-0.54, 0.37] | 0.49 | -2.7% | 0.02 / -0.09 |
+| [XOM / CVX](results/case_studies/integrated_oil_xom_cvx/fixed) | fixed | 2012-01 to 2024-12 | 4/26 | 8 | -20.0% | -1.7% | -0.07 [-0.64, 0.53] | 0.39 | -51.8% | -0.07 / -0.09 |
+| [XOM / CVX](results/case_studies/integrated_oil_xom_cvx/optimized) | optimized | 2012-01 to 2024-12 | 4/26 | 7 | -6.5% | -0.5% | -0.22 [-0.84, 0.45] | 0.20 | -15.1% | -0.20 / -0.30 |
+| [KO / PEP](results/case_studies/consumer_staples_ko_pep/fixed) | fixed | 2012-01 to 2024-12 | 1/26 | 2 | 0.8% | 0.1% | 0.12 [-0.28, 0.39] | 0.67 | -1.4% | 0.15 / 0.03 |
+| [KO / PEP](results/case_studies/consumer_staples_ko_pep/optimized) | optimized | 2012-01 to 2024-12 | 1/26 | 2 | 0.8% | 0.1% | 0.08 [-0.35, 0.37] | 0.61 | -2.0% | 0.09 / 0.02 |
+| [EWA / EWC](results/case_studies/commodity_countries_ewa_ewc/fixed) | fixed | 2012-01 to 2024-12 | 9/26 | 25 | -1.4% | -0.1% | -0.02 [-0.41, 0.35] | 0.46 | -5.9% | 0.04 / -0.23 |
+| [EWA / EWC](results/case_studies/commodity_countries_ewa_ewc/optimized) | optimized | 2012-01 to 2024-12 | 9/26 | 20 | -14.4% | -1.2% | -0.36 [-0.79, 0.08] | 0.09 | -15.8% | -0.31 / -0.51 |
+| [TSLA / NFLX / PLTR](results/case_studies/control_tsla_nflx_pltr/fixed) | fixed | 2022-10 to 2024-12 | 3/5 | 6 | -19.5% | -9.3% | -0.41 [-1.88, 1.43] | 0.27 | -43.8% | -0.40 / -0.46 |
+| [TSLA / NFLX / PLTR](results/case_studies/control_tsla_nflx_pltr/optimized) | optimized | 2022-10 to 2024-12 | 3/5 | 8 | -1.5% | -0.7% | 0.02 [-0.94, 1.55] | 0.51 | -21.4% | 0.05 / -0.06 |
+<!-- CASE_STUDY_RESULTS:END -->
 
-### Signal Generation via Z-Score
+This table is generated from the result files by `scripts/run_case_studies.py`, and a test fails if it
+ever disagrees with them. PSR is the probability the true Sharpe is above zero. Below 0.95 means I
+cannot distinguish the result from luck.
 
-The spread is normalized into a z-score using a rolling window:
+Four things stood out.
 
-```
-Z_t = (S_t - μ_{window}) / σ_{window}
-```
+**Nothing was significant.** Every confidence interval contains zero. The best PSR in the table is
+0.67, on a basket that traded twice in thirteen years. Setting costs to zero does not save it either:
+the zero-cost Sharpe ratios run from -0.40 to 0.15.
 
-where μ_{window} and σ_{window} are the rolling mean and standard deviation.
+**The cointegration filter almost never opened the gate.** Over two-year windows, the banks passed the
+test in 1 of 26 windows. So did Coke and Pepsi. Pairs that everyone describes as cointegrated mostly
+are not, window by window, and the book sits in cash. Meanwhile my control basket, the one with no
+economic link at all, passed in 3 of 5 windows. That bothered me enough to check the test itself, and it
+turns out the version I use over-rejects: on random walks with no drift it flags cointegration about 12%
+of the time at a nominal 5%. I left it alone rather than change the rules mid-experiment, and wrote it
+down as a limitation.
 
-**Trading Logic** (State Machine):
+**Tuning made things worse, in a very recognisable way.** Bayesian optimisation lifted the in-sample
+Sharpe per basket to between 1.6 and 2.2, up from 0.57 to 1.15 with fixed thresholds. Out of sample,
+those same tuned windows averaged between -0.61 and 0.49. Here is one basket, window by window, light
+blue in-sample and dark blue out-of-sample:
 
-```
-States: IDLE (0), LONG (1), SHORT (-1)
+![In-sample versus out-of-sample Sharpe per window](results/case_studies/commodity_countries_ewa_ewc/optimized/plots/fold_sharpes.png)
 
-Transitions:
-  IDLE → LONG:   Z_t < -θ_entry    (spread oversold, expect reversion up)
-  IDLE → SHORT:  Z_t > +θ_entry    (spread overbought, expect reversion down)
+Eight of nine windows look good in-sample. Six of nine are negative out of sample. The deflated Sharpe
+ratio, which is supposed to catch exactly this by penalising the number of parameter sets tried,
+averaged 0.73 to 0.97 and did not flag it. That is worth understanding: the problem was not only that I
+tried many parameters, it is that the relationship itself changed between the estimation window and the
+trading window.
 
-  LONG → IDLE:   Z_t > -θ_exit  OR  Z_t < -θ_stop
-  SHORT → IDLE:  Z_t < +θ_exit  OR  Z_t > +θ_stop
-```
+**The big losses were not really spread trades.** The Johansen vector does not have to have opposite
+signs, and in three of the XOM/CVX windows both weights came out positive. "Long the spread" then means
+long both oil companies. The fixed run bought that on 22 January 2020 and held it into the COVID crash:
 
-**Implementation**:
+![XOM/CVX equity and drawdown](results/case_studies/integrated_oil_xom_cvx/fixed/plots/equity_drawdown.png)
 
-```python
-# From src/strategy/signals.py
-def generate_signals(self, zscore: pd.Series) -> pd.Series:
-    signals = pd.Series(0, index=zscore.index, name='signal')
-    position = 0  # Current position state
+Down 52% of the equity it was sized on by 23 March. The z-score stop at -4 never fired, because the
+crash blew up the 60-day standard deviation just as fast as the loss grew, so in z terms the position
+never looked more than 3.73 standard deviations offside. It finally closed on a normal exit signal in
+April, down 27.9%. The worst trade in the control basket had the same shape: weights of +0.58, -0.19 and
++0.22, about 60% net long, in the Q4 2022 tech selloff.
 
-    for i in range(len(zscore)):
-        z = zscore.iloc[i]
+Two clear lessons. A cointegrating vector is not automatically a hedge. And a stop defined in z-score
+units is not a loss limit, because its yardstick stretches exactly when you need it to hold still.
 
-        if pd.isna(z):
-            signals.iloc[i] = position
-            continue
+## What I changed after that
 
-        if position == 0:  # No position (IDLE)
-            if z < -self.entry_threshold:
-                position = 1  # Enter long
-            elif z > self.entry_threshold:
-                position = -1  # Enter short
+Three rules, each one answering something I had measured rather than something I imagined:
 
-        elif position == 1:  # Long position
-            # Exit if crosses exit threshold or hits stop loss
-            if z > -self.exit_threshold or z < -self.stop_loss:
-                position = 0  # Exit long
+| Change | Setting | Why |
+|---|---|---|
+| Require the basket to be hedged | `max_net_exposure: 0.20` | Half of all traded windows had more than 20% of gross as net directional exposure |
+| Stop on money, not on z | `stop_loss_fraction: 0.10` | Of 84 trades in round one, none that fell 10% ever recovered; a 10% stop would have cut zero winners |
+| Let go of stale positions | `max_holding_bars: 36` | Roughly three times the median half-life |
+| Size by risk, not by a fixed number | `target_volatility: 0.10`, `max_gross: 1.0` | Fixed 1x gross made risk per trade depend on whatever the spread's volatility happened to be |
 
-        elif position == -1:  # Short position
-            # Exit if crosses exit threshold or hits stop loss
-            if z < self.exit_threshold or z > self.stop_loss:
-                position = 0  # Exit short
+All three default to off, so round one stays reproducible exactly as published.
 
-        signals.iloc[i] = position
+Then the awkward part. Every one of those rules came from looking at round one's out-of-sample results,
+which makes those results design data. Testing the new rules on the same five baskets and calling it
+out of sample would be exactly the sin this project exists to avoid. So round two needed a different
+universe.
 
-    return signals
-```
+## Round two: sixty pairs I did not pick
 
-This state machine ensures we only trade when the spread deviates significantly from its mean, and we exit when it reverts.
+I wrote down a rule instead of choosing baskets: 17 families of ETFs that share an economic driver,
+every pair inside a family, no pairs across families, and none of the tickers from round one. That
+gives 60 pairs ([config/universe_v3.yaml](config/universe_v3.yaml)).
 
----
+Two of those families exist as **positive controls**: GLD and IAU are both gold, IVV and SPY are both
+the S&P 500. They are as cointegrated as two things can be. If my pipeline did not find them, my
+pipeline was broken and nothing else it said would mean anything.
 
-### Bayesian Optimization
+Because sixty tests at 5% each would throw up three false positives by accident, significance is
+judged after a Benjamini-Hochberg false discovery correction across all sixty.
 
-Traditional grid search or random search is inefficient for hyperparameter tuning. Bayesian optimization uses a probabilistic model (Gaussian Process) to intelligently explore the parameter space.
+**The result: zero discoveries out of sixty.**
 
-**Gaussian Process Surrogate**:
+| | After costs | With no frictions at all |
+|---|---|---|
+| Median Sharpe across the 42 pairs that traded | **-0.14** | -0.02 |
+| Pairs with a positive Sharpe | 14 of 42 | 20 of 42 |
+| Equal-weight portfolio, 2012 to 2024 | **-0.69%** total, Sharpe -0.39 | +0.31% total, Sharpe 0.18 |
+| Discoveries after correction | **0 of 60** | |
 
-We model the objective function f(x) (e.g., negative Sharpe ratio) as a Gaussian Process:
+![Distribution of out-of-sample Sharpe across pairs](results/v3_universe/plots/sharpe_distribution.png)
 
-```
-f(x) ~ GP(μ(x), k(x, x'))
-```
+The whole distribution sits left of zero, and taking costs away shifts it back to roughly zero rather
+than into profit. That is the thing to notice: there is no hidden edge that costs are eating. There is
+barely an edge at all.
 
-where k is the kernel function (commonly Matérn 5/2):
+![Equal-weight portfolio of all pairs](results/v3_universe/plots/portfolio_equity.png)
 
-```
-k(x, x') = σ²·(1 + √5·r + 5r²/3)·exp(-√5·r)
-where r = ||x - x'|| / ℓ
-```
+Thirteen years, sixty pairs, and the frictionless version makes 0.31%. Not 0.31% a year. In total.
 
-**Expected Improvement Acquisition Function**:
+### The controls are the punchline
 
-At iteration t, we have observations D_t = {(x_i, y_i)}. The Expected Improvement (EI) quantifies the expected gain over the current best:
+| Control | Windows traded | Trades | Spread volatility | Gross per trade | Cost per trade | Sharpe | Sharpe with no frictions |
+|---|---|---|---|---|---|---|---|
+| GLD/IAU | 24 of 26 | 119 | 0.6%/yr | **0.53 bps** | **10.3 bps** | **-2.80** | +0.22 |
+| IVV/SPY | 16 of 26 | 71 | 0.3%/yr | **0.51 bps** | **10.2 bps** | **-2.43** | +0.21 |
 
-```
-EI(x) = E[max(f_best - f(x), 0)]
-      = (f_best - μ(x))·Φ(Z) + σ(x)·φ(Z)
+These two traded more windows than any genuine candidate in the universe, which is exactly what should
+happen, because they really are cointegrated. The machinery works. They were also the two worst
+performers out of sixty, because the mispricing they capture is about twenty times smaller than the cost
+of capturing it.
 
-where:
-  Z = (f_best - μ(x)) / σ(x)
-  Φ(·) = CDF of standard normal
-  φ(·) = PDF of standard normal
-```
+That is the entire finding in two rows. Where cointegration is unambiguous, the spread is tiny. Where
+the spread is big enough to pay for the trading, the cointegration is not stable enough to rely on.
 
-We select the next point by maximizing EI:
+![Gross P&L per trade minus cost per trade, by pair](results/v3_universe/plots/per_trade_economics.png)
 
-```
-x_{next} = argmax EI(x)
-```
+Only 14 of the 42 pairs that traded earned more per trade than they paid to trade. The median pair lost
+1.2 basis points gross and paid 12.1.
 
-**Implementation**:
+### No, leverage does not fix this
 
-```python
-# From src/optimization/optimizer.py
-def optimize(self) -> OptimizationResult:
-    @use_named_args(self.dimensions)
-    def objective_wrapper(**params):
-        score = self.objective_function(params)
-
-        # Track evaluation
-        self.all_params.append(params.copy())
-        self.all_scores.append(float(score))
-
-        # Update convergence history
-        if len(self.convergence_history) == 0:
-            self.convergence_history.append(float(score))
-        else:
-            best_so_far = min(self.convergence_history[-1], float(score))
-            self.convergence_history.append(best_so_far)
-
-        return score
-
-    # Run optimization with Gaussian Process + Expected Improvement
-    result = gp_minimize(
-        func=objective_wrapper,
-        dimensions=self.dimensions,
-        n_calls=self.n_iterations,
-        n_initial_points=self.n_initial_points,
-        acq_func="EI",  # Expected Improvement
-        random_state=self.random_state,
-        verbose=False
-    )
-
-    # Extract best parameters
-    best_params = {
-        name: float(value)
-        for name, value in zip(self.param_names, result.x)
-    }
-
-    return OptimizationResult(...)
-```
-
-The objective function evaluates a full backtest for each parameter combination, returning the negative Sharpe ratio to minimize.
-
----
-
-### Risk Management
-
-**Value at Risk (VaR)**:
-
-VaR at confidence level α is the maximum expected loss over a given time horizon:
+This was my first instinct too, so I worked it through. Volatility targeting actually wanted about 17x
+on those quiet spreads, and my 1x cap stopped it. Lifting the cap would not have helped, because both
+sides of the trade scale with position size:
 
 ```
-P(Loss > VaR_α) = 1 - α
+net per trade = (gross bps - cost bps) x notional
 ```
 
-**Methods**:
+With gross at 0.5 and cost at 10, a bigger notional just multiplies a negative number. Leverage changes
+the size of the answer, not its sign.
 
-1. **Historical VaR**: Empirical quantile
-   ```
-   VaR_α = -Quantile_{1-α}(returns)
-   ```
+### Cost sensitivity
 
-2. **Parametric VaR**: Assumes normal distribution
-   ```
-   VaR_α = -(μ + σ·z_α)
-   where z_α = Φ^{-1}(1-α)
-   ```
+Same trades, same windows, only the cost assumption changed:
 
-3. **Cornish-Fisher VaR**: Adjusts for skewness and kurtosis
-   ```
-   z_CF = z_α + (z_α² - 1)·S/6 + (z_α³ - 3z_α)·K/24 - (2z_α³ - 5z_α)·S²/36
+| Cost per side | Median Sharpe | Pairs positive |
+|---|---|---|
+| 0 bps | -0.03 | 19 of 42 |
+| 5 bps (what I use) | -0.14 | 14 of 42 |
+| 10 bps | -0.24 | 12 of 42 |
+| 20 bps | -0.34 | 8 of 42 |
 
-   VaR_α = -(μ + σ·z_CF)
+I had pre-registered what would count as a failure: a median Sharpe at or below zero across at least 50
+baskets. Median -0.14 across 60. So the conclusion was fixed before I saw it, and it is that this
+strategy family does not work at daily frequency with these costs. Full write-up in
+[docs/RESULTS_V3.md](docs/RESULTS_V3.md), raw numbers in [results/v3_universe/](results/v3_universe/).
 
-   where:
-     S = skewness
-     K = excess kurtosis
-   ```
+## What I take away from this
 
-**Expected Shortfall (CVaR)**:
+**A backtest that runs proves nothing.** Mine ran fine for weeks while inventing profits out of position
+values. What caught it was a test with an answer I already knew: flat prices, one round trip, lose
+exactly the costs.
 
-Conditional VaR measures the expected loss given that VaR is exceeded:
+**Most of the work is in not fooling yourself.** Next-bar execution, trailing windows, fixed protocols,
+separate evaluation universes, false-discovery correction. None of that is glamorous and all of it is
+what makes the number at the end mean something.
 
-```
-CVaR_α = E[Loss | Loss > VaR_α]
-```
+**Controls belong in backtests.** Adding two pairs that must be cointegrated turned an ambiguous
+negative result into a diagnosis. Without them I could not have separated "my code is broken" from "the
+economics do not work", and those need completely different responses.
 
-**Implementation**:
+**In-sample performance is nearly free.** I can produce a 2.0 Sharpe in-sample by asking an optimiser
+nicely. It means nothing. The gap between 1.6-2.2 in-sample and roughly zero out-of-sample is the whole
+game.
 
-```python
-# From src/risk/manager.py
-def calculate_var_cornish_fisher(
-    returns: pd.Series,
-    confidence_level: float = 0.95
-) -> VaRResult:
-    alpha = 1 - confidence_level
+**Know the size of the edge you need.** Everything here hinges on one comparison: half a basis point of
+gross against ten of cost. Working that out early would have saved a lot of backtesting.
 
-    # Calculate moments
-    mu = returns.mean()
-    sigma = returns.std()
-    skew = returns.skew()
-    kurt = returns.kurtosis()  # Excess kurtosis
+## Running it
 
-    # Get base z-score
-    z_alpha = stats.norm.ppf(alpha)
-
-    # Cornish-Fisher adjustment
-    z_cf = (
-        z_alpha
-        + (z_alpha**2 - 1) * skew / 6
-        + (z_alpha**3 - 3 * z_alpha) * kurt / 24
-        - (2 * z_alpha**3 - 5 * z_alpha) * skew**2 / 36
-    )
-
-    # VaR with adjusted z-score
-    var = -(mu + sigma * z_cf)
-
-    return VaRResult(
-        var=float(var),
-        confidence_level=confidence_level,
-        method="cornish_fisher"
-    )
-```
-
----
-
-## Implementation Details
-
-### Architecture
-
-```
-BasketTradingBO/
-├── src/
-│   ├── cointegration/          # Johansen test, VECM, spread calculation
-│   │   ├── engine.py
-│   │   └── spread.py
-│   ├── optimization/           # Bayesian optimization
-│   │   └── optimizer.py
-│   ├── strategy/               # Signal generation, filters
-│   │   ├── signals.py
-│   │   ├── filters.py
-│   │   └── portfolio.py
-│   ├── backtesting/            # Backtest engine, metrics
-│   │   ├── backtester.py
-│   │   └── metrics.py
-│   ├── risk/                   # VaR, position sizing
-│   │   └── manager.py
-│   ├── data/                   # Market data, caching
-│   │   ├── market_data.py
-│   │   ├── cache.py
-│   │   └── features.py
-│   ├── visualization/          # Plots, reports
-│   │   ├── plots.py
-│   │   └── reports.py
-│   └── utils/                  # Config, logging, exceptions
-│       ├── config.py
-│       ├── logger.py
-│       ├── exceptions.py
-│       └── io.py
-├── scripts/
-│   ├── run_pipeline.py         # Main orchestration script
-│   ├── run_optimization.py
-│   └── run_backtest.py
-├── tests/
-│   ├── unit/
-│   └── integration/
-├── config/
-│   └── config.yaml
-└── results/                    # Generated outputs
-    └── TICKER1_TICKER2_TICKER3/
-        └── YYYYMMDD_HHMMSS/
-            ├── backtest_report.html
-            ├── pipeline_results.json
-            ├── correlation_matrix.png
-            └── plots/
-```
-
-### Key Features
-
-- **Caching**: HDF5 and Parquet caching for market data with TTL
-- **Logging**: Structured JSON logging with timestamps and context
-- **Error Handling**: Custom exception hierarchy with rich context
-- **Testing**: Comprehensive unit tests with property-based testing (Hypothesis)
-- **Type Safety**: Full type hints with numpy typing
-- **Performance**: Vectorized operations, efficient pandas usage
-
----
-
-## Case Study: TSLA-NFLX-PLTR Basket
-
-Let's analyze the results from a 3-year backtest (2022-01-01 to 2025-01-01) on the basket [TSLA, NFLX, PLTR].
-
-### Performance Metrics
-
-![Performance Metrics](screenshots/PERFROMANCE%20METRICS.png)
-
-**Results Overview**:
-- **Total Return**: -4.62%
-- **Annualized Return**: -1.31%
-- **Sharpe Ratio**: -0.18
-- **Sortino Ratio**: -0.13
-- **Max Drawdown**: -8.19%
-- **Calmar Ratio**: -0.16
-- **Win Rate**: 28.02%
-- **Profit Factor**: 0.88
-- **Number of Trades**: 416
-
-**Analysis**:
-
-The negative returns indicate that the TSLA-NFLX-PLTR basket did not exhibit stable cointegration over this period. This is a critical insight: not all asset combinations are suitable for mean-reversion strategies.
-
-The low win rate (28%) coupled with a profit factor below 1 suggests that losses outweighed gains. The Sharpe ratio of -0.18 indicates risk-adjusted underperformance relative to cash.
-
-**What went wrong?**
-
-1. **Trending Spreads**: These growth stocks experienced significant directional trends (especially TSLA and PLTR) that violated the mean-reversion assumption.
-
-2. **Weak Cointegration**: The eigenvalues from the Johansen test likely showed weak statistical significance, but the pipeline continued for demonstration.
-
-3. **Parameter Mismatch**: Default parameters (entry threshold = 2.0, exit = 0.5) may not have been optimal for this volatile basket.
-
-### Portfolio Performance
-
-![Portfolio Performance](screenshots/PORTFOLIO%20PERFORMANCE.png)
-
-The portfolio equity curve shows several distinct phases:
-
-1. **Early 2022**: Brief profitable period with rapid gains (early mean reversion signals)
-2. **Mid 2022**: Sharp drawdown as spread broke away from historical mean
-3. **2023**: Extended flat period with minimal opportunities
-4. **2024**: Further deterioration as spread continued trending
-
-The **Trading Signals** panel (bottom) shows the strategy was predominantly in positions, suggesting over-trading. The long periods in SHORT positions (pink) during 2022-2023 coincided with losses, as the spread continued to widen rather than revert.
-
-### Spread and Z-Score Analysis
-
-![Spread and Z-Score](screenshots/Spread%20and%20Z-Score.png)
-
-**Basket Spread** (top panel):
-
-The spread shows a clear **downward trend** from 2022 onwards, violating the stationarity assumption. A stationary spread should fluctuate around a constant mean. This trending behavior is a red flag that cointegration has broken down.
-
-**Z-Score with Trading Thresholds** (bottom panel):
-
-- **Red dashed lines**: Entry thresholds (±2.0σ)
-- **Orange dashed lines**: Exit thresholds (±0.5σ)
-- **Green triangles**: Long entry signals
-- **Red triangles**: Short entry signals
-
-Notable observations:
-
-1. **Early 2022**: Z-score oscillated around zero with successful mean reversion (green triangles at -2σ, followed by reversion)
-
-2. **Late 2024-2025**: Z-score dropped below -2σ and continued declining to -4σ, triggering multiple long signals that resulted in losses (spread kept trending down)
-
-3. **Lack of Mean Reversion**: Post-2022, the spread rarely reverted to the mean after breaching entry thresholds
-
-**Diagnostic**: The spread's half-life likely exceeded 60 days or showed θ ≥ 0 in the OU regression, indicating no mean reversion.
-
-### Transaction Costs
-
-From the HTML report:
-- **Total Transaction Costs**: $629.08
-- **Average Cost per Trade**: $1.51
-- **Cost as % of Returns**: 13.62%
-
-With 416 trades over 3 years, the strategy turned over frequently (averaging 2-3 trades per week). Transaction costs consumed 13.62% of gross returns, which is significant for a strategy with negative returns.
-
-**Lesson**: Mean-reversion strategies are sensitive to transaction costs. High-frequency rebalancing erodes profitability, especially when spread movements are small.
-
-### Key Takeaways
-
-1. **Cointegration is Data-Dependent**: Not all asset groups cointegrate. Tech growth stocks (TSLA, NFLX, PLTR) have idiosyncratic drivers that can override statistical relationships.
-
-2. **Regime Changes**: Relationships stable in one market regime may break down in others. The 2022-2024 period included Fed rate hikes, tech selloff, and AI hype (PLTR), creating divergence.
-
-3. **Pre-Screening is Critical**: Before deploying capital, verify:
-   - Johansen test p-value < 0.05
-   - Half-life in range 10-60 days
-   - Hurst exponent < 0.5
-   - Rolling cointegration tests to detect regime changes
-
-4. **Optimization Opportunity**: Running Bayesian optimization (`--optimize`) might have found better parameters, but no amount of optimization can fix a fundamentally non-cointegrated basket.
-
-**Better Candidates**: Sector ETFs (XLF, KBE, KRE for financials), commodities (GLD, SLV), or stocks within the same industry (banks: JPM, BAC, GS) typically show stronger cointegration.
-
----
-
-## Installation
-
-### Prerequisites
-
-- Python 3.8+ (Python 3.9 or 3.10 recommended)
-- pip (Python package installer)
-- Git
-
-### Quick Start Installation
-
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/yourusername/BasketTradingBO.git
-   cd BasketTradingBO
-   ```
-
-2. **Create and activate virtual environment** (recommended):
-
-   **On Linux/macOS**:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-   **On Windows**:
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate
-   ```
-
-3. **Upgrade pip** (important for compatibility):
-   ```bash
-   pip install --upgrade pip
-   ```
-
-4. **Install requirements**:
-
-   **Option A: Using requirements.txt (Recommended)**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-   **Option B: Using setup.py**:
-   ```bash
-   pip install -e .
-   ```
-
-5. **Verify installation**:
-   ```bash
-   python -c "import src; print('Installation successful!')"
-   ```
-
-### Development Installation
-
-For developers who want to contribute or modify the code:
-
-1. **Install development dependencies**:
-   ```bash
-   pip install -r requirements-dev.txt
-   ```
-
-   This includes additional tools:
-   - Code formatters: `black`, `isort`
-   - Linters: `flake8`
-   - Type checking: `mypy`
-   - Documentation: `sphinx`
-   - Interactive tools: `jupyter`, `ipython`
-
-2. **Install pre-commit hooks** (optional but recommended):
-   ```bash
-   pip install pre-commit
-   pre-commit install
-   ```
-
-3. **Run tests to verify setup**:
-   ```bash
-   pytest tests/ -v
-   ```
-
-### Dependencies Overview
-
-Core dependencies (see `requirements.txt` for specific versions):
-
-**Data Science & Computation**:
-- `numpy>=1.24.3` - Numerical computing
-- `pandas>=2.0.3` - Data manipulation and analysis
-- `scipy>=1.11.2` - Scientific computing and statistics
-
-**Statistical Analysis**:
-- `statsmodels>=0.14.0` - Econometric tests (Johansen, ADF, VECM)
-
-**Machine Learning**:
-- `scikit-learn>=1.3.0` - ML algorithms and preprocessing
-- `scikit-optimize>=0.9.0` - Bayesian optimization
-
-**Market Data**:
-- `yfinance>=0.2.28` - Yahoo Finance data downloader
-- `pandas-datareader>=0.10.0` - Alternative data sources
-
-**Data Storage**:
-- `tables>=3.8.0` - HDF5 file support
-- `pyarrow>=13.0.0` - Parquet file support
-
-**Visualization**:
-- `matplotlib>=3.7.2` - Plotting library
-- `seaborn>=0.12.2` - Statistical visualizations
-- `plotly>=5.17.0` - Interactive plots
-
-**Configuration & Utilities**:
-- `pyyaml>=6.0.1` - YAML configuration files
-- `python-dotenv>=1.0.0` - Environment variable management
-- `tqdm>=4.66.1` - Progress bars
-- `joblib>=1.3.2` - Parallel processing
-
-**Testing**:
-- `pytest>=7.4.2` - Testing framework
-- `pytest-cov>=4.1.0` - Code coverage
-- `hypothesis>=6.88.1` - Property-based testing
-
-### Troubleshooting Installation
-
-**Issue: `tables` installation fails on Windows**
-```bash
-# Solution: Install HDF5 binaries first
-pip install tables --only-binary :all:
-# Or skip HDF5 caching (use Parquet instead)
-pip install -r requirements.txt --no-deps
-pip install tables || echo "Skipping tables, will use Parquet caching"
-```
-
-**Issue: `scikit-optimize` installation fails**
-```bash
-# Solution: Install from conda-forge
-conda install -c conda-forge scikit-optimize
-```
-
-**Issue: Memory errors during data fetching**
-```bash
-# Solution: Increase available memory or reduce date range
-# Edit config/config.yaml to reduce lookback_window
-```
-
-**Issue: Import errors after installation**
-```bash
-# Solution: Ensure virtual environment is activated
-source venv/bin/activate  # Linux/macOS
-venv\Scripts\activate     # Windows
-
-# Verify Python is using the venv
-which python  # Should show path to venv
-pip list      # Verify packages are installed
-```
-
----
-
-## Usage
-
-### Quick Start Example
-
-Get started in 3 simple steps:
+You need Python 3.10.
 
 ```bash
-# 1. Activate your virtual environment
-source venv/bin/activate
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements-dev.txt
 
-# 2. Run the pipeline with default parameters (bank stocks example)
-python scripts/run_pipeline.py \
-    --tickers JPM BAC GS \
-    --start 2020-01-01 \
-    --end 2023-12-31
-
-# 3. View the HTML report (opens in your browser)
-open results/JPM_BAC_GS/*/backtest_report.html  # macOS
-xdg-open results/JPM_BAC_GS/*/backtest_report.html  # Linux
-start results/JPM_BAC_GS/*/backtest_report.html  # Windows
+pytest                            # about a minute, no network needed
 ```
 
-That's it! The pipeline will automatically:
-- Download price data from Yahoo Finance
-- Test for cointegration using Johansen test
-- Calculate the optimal spread and z-scores
-- Generate trading signals
-- Run a complete backtest with transaction costs
-- Create an interactive HTML report with visualizations
+One basket:
 
-### Basic Workflow
-
-#### 1. Run Complete Pipeline
-
-**With default parameters**:
 ```bash
-python scripts/run_pipeline.py \
-    --tickers JPM BAC GS \
-    --start 2020-01-01 \
-    --end 2023-12-31 \
-    --output-dir results
+python scripts/run_pipeline.py --tickers KO PEP --start 2010-01-01 --end 2025-01-01 --mode fixed
 ```
 
-**With Bayesian optimization** (recommended for best results):
+Everything from round one, which also regenerates the table in this README:
+
 ```bash
-python scripts/run_pipeline.py \
-    --tickers JPM BAC GS \
-    --start 2020-01-01 \
-    --end 2023-12-31 \
-    --optimize \
-    --n-iterations 50 \
-    --output-dir results
+python scripts/run_case_studies.py
 ```
 
-**Command-line arguments**:
-- `--tickers`: Space-separated list of ticker symbols (minimum 2)
-- `--start`: Start date in YYYY-MM-DD format
-- `--end`: End date in YYYY-MM-DD format
-- `--optimize`: Enable Bayesian optimization (optional)
-- `--n-iterations`: Number of optimization iterations (default: 50)
-- `--output-dir`: Output directory for results (default: results)
-- `--no-report`: Skip HTML report generation (optional)
+Round two, the sixty-pair universe:
 
-**What the pipeline does**:
-1. Fetch historical price data from Yahoo Finance
-2. Test for cointegration using Johansen trace test
-3. Calculate spread using cointegrating vector
-4. Compute z-scores for mean reversion signals
-5. (Optional) Optimize parameters via Bayesian optimization
-6. Generate trading signals with state machine
-7. Backtest strategy with transaction costs
-8. Calculate risk metrics (VaR, CVaR, Sharpe, Sortino)
-9. Generate comprehensive HTML report with plots
-
-#### 2. View Results
-
-Results are automatically saved in an organized directory structure:
-
-```
-results/JPM_BAC_GS/20251119_034828/
-├── backtest_report.html          # Main HTML report
-├── pipeline_results.json          # All metrics in JSON
-├── correlation_matrix.png         # Asset correlations
-├── var_distribution.png           # VaR analysis
-├── optimization_convergence.png   # (if --optimize used)
-└── plots/
-    ├── performance.png            # Portfolio equity curve
-    ├── spread_zscore.png          # Spread and z-score
-    └── drawdown.png               # Drawdown chart
-```
-
-**View the HTML report**:
 ```bash
-# The report includes:
-# - Performance metrics (Sharpe, Sortino, max drawdown)
-# - Interactive charts (portfolio value, signals, spread)
-# - Transaction cost analysis
-# - Risk metrics (VaR, CVaR)
-# - Strategy parameters used
-
-# macOS
-open results/JPM_BAC_GS/20251119_034828/backtest_report.html
-
-# Linux
-xdg-open results/JPM_BAC_GS/20251119_034828/backtest_report.html
-
-# Windows
-start results/JPM_BAC_GS/20251119_034828/backtest_report.html
+python scripts/run_universe.py --config config/config_v3.yaml --universe config/universe_v3.yaml
 ```
 
-**View JSON results**:
-```bash
-# View in terminal with jq (install: brew install jq)
-cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json | jq
+Each run writes `results.json` with every statistic and its provenance, an HTML report, the trade
+ledger, the daily equity, and charts.
 
-# View performance metrics only
-cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json | jq '.performance_metrics'
+Price data is not in the repo, because redistributing Yahoo data is not mine to do. The first run
+downloads it and saves a snapshot; every result records that snapshot's SHA-256. If you re-download
+later and Yahoo has revised its adjusted prices, the hash will not match and you will know why your
+numbers moved. With the same snapshot, runs are identical: the optimiser and the bootstrap are seeded.
+
+## How it is tested
+
+195 tests, about 92% coverage, running in CI on every push
+([.github/workflows/tests.yml](.github/workflows/tests.yml)). No network required, because the data
+layer is fed synthetic prices.
+
+The parts I care about most:
+
+- **Cases where I already know the answer.** Flat prices lose exactly the round trip cost. A known price
+  move produces a known P&L. Borrow fees, cost scaling and position sizing all match numbers worked out
+  by hand.
+- **Invariants on random inputs**, using Hypothesis. Equity change always equals P&L minus costs, and
+  always equals the sum of the trade ledger. Shocking prices after any date never changes any earlier
+  equity, signal or z-score. Every corner of the optimiser's search space is a valid parameter set.
+- **Statistical behaviour.** Johansen recovers weights I planted in synthetic data. Its false-positive
+  rate is pinned both with and without drift. The half-life estimator recovers a known AR(1) half-life.
+  The strategy does make money on a synthetic basket that really does mean-revert, which is the sanity
+  check that the whole thing can detect an edge when one exists.
+- **Documentation.** A test fails if the results table above stops matching the result files, or if the
+  README links to something that does not exist.
+
+## What is in the repo
+
+```text
+config/
+  config.yaml              round one protocol, fixed before running
+  case_studies.yaml        the five baskets
+  config_v3.yaml           round two protocol
+  universe_v3.yaml         the 60-pair universe and the rule that built it
+docs/
+  AUDIT.md                 what was wrong with v1 and the test guarding each fix
+  RESEARCH_V3.md           evidence and literature behind the v3 changes
+  RESULTS_V3.md            the universe results in full
+results/
+  case_studies/            round one output, one folder per basket and mode
+  v3_universe/             round two output
+scripts/
+  run_pipeline.py          one basket
+  run_case_studies.py      all five, regenerates the README table
+  run_universe.py          the universe screen
+src/
+  data/market_data.py          download, align, validate, snapshot
+  cointegration/engine.py      Johansen and Engle-Granger
+  cointegration/spread.py      spread, z-score, half-life
+  strategy/signals.py          the signal state machine
+  backtesting/backtester.py    cash accounting, costs, stops, trade ledger
+  backtesting/walk_forward.py  the fold protocol
+  backtesting/metrics.py       Sharpe, PSR, deflated Sharpe, bootstrap
+  optimization/optimizer.py    Gaussian process Bayesian optimisation
+  risk/var.py                  VaR and expected shortfall
+  universe.py                  universe screening and false-discovery control
+  visualization/               charts, HTML reports, the README table
+  pipeline.py                  end to end run and CLI
+tests/                         195 tests
 ```
 
-#### 3. Example Output
-
-When the pipeline completes successfully, you'll see:
-
-```
-============================================================
-BASKET TRADING PIPELINE - COMPLETED
-============================================================
-Results saved to: results/JPM_BAC_GS/20251119_034828
-
-Quick Access:
-  - View Report:  start results/JPM_BAC_GS/20251119_034828/backtest_report.html
-  - View Metrics: cat results/JPM_BAC_GS/20251119_034828/pipeline_results.json
-  - View Plots:   explorer results/JPM_BAC_GS/20251119_034828/plots
-============================================================
-
-Performance Summary:
-  Sharpe Ratio:    1.23
-  Total Return:    15.4%
-  Max Drawdown:   -6.2%
-  Win Rate:        52.3%
-  Number of Trades: 142
-```
-
-### Advanced Usage
-
-#### Custom Configuration
-
-Create `config/config.yaml`:
-
-```yaml
-cointegration:
-  method: "johansen"
-  significance_level: 0.05
-  johansen:
-    deterministic_term: "c"  # constant
-    test_statistic: "trace"
-  adf:
-    regression: "c"
-    autolag: "BIC"
-    maxlag: 10
-  spread:
-    lookback_window: 252
-    half_life_min: 5
-    half_life_max: 60
-
-strategy:
-  signal:
-    entry_threshold: 2.0
-    exit_threshold: 0.5
-    stop_loss: 4.0
-  filters:
-    min_holding_period: 5
-
-backtesting:
-  initial_capital: 100000.0
-  commission: 0.001  # 0.1%
-  slippage: 0.0005   # 0.05%
-  position_size: 0.20
-
-risk:
-  max_position_size: 0.30
-  max_portfolio_var: 0.02
-  var_confidence_level: 0.95
-  lookback_window: 252
-
-data:
-  cache:
-    enabled: true
-    backend: "hdf5"  # or "parquet"
-    ttl_days: 7
-    directory: ".cache"
-```
-
-#### Programmatic API
-
-```python
-from src.data.market_data import MarketDataAdapter
-from src.cointegration.engine import CointegrationEngine
-from src.cointegration.spread import SpreadCalculator
-from src.strategy.signals import SignalGenerator
-from src.backtesting.backtester import Backtester
-from src.optimization.optimizer import BayesianOptimizer
-
-# 1. Fetch data
-adapter = MarketDataAdapter()
-prices = adapter.fetch_data(["JPM", "BAC", "GS"], "2020-01-01", "2023-12-31")
-
-# 2. Test cointegration
-engine = CointegrationEngine()
-coint_result = engine.test_cointegration(prices)
-
-if coint_result.is_cointegrated:
-    # 3. Calculate spread
-    weights = coint_result.eigenvectors[:, 0]
-    calc = SpreadCalculator()
-    spread = calc.calculate_spread(prices, weights)
-    zscore = calc.calculate_zscore(spread, lookback=252)
-
-    # 4. Generate signals
-    signal_gen = SignalGenerator(entry_threshold=2.0, exit_threshold=0.5, stop_loss=4.0)
-    signals = signal_gen.generate_signals(zscore)
-
-    # 5. Backtest
-    backtester = Backtester(initial_capital=100000.0, commission=0.001, slippage=0.0005)
-    result = backtester.run_backtest(prices, signals, weights)
-
-    print(f"Sharpe Ratio: {result.metrics.sharpe_ratio:.2f}")
-    print(f"Total Return: {result.metrics.total_return:.2%}")
-    print(f"Max Drawdown: {result.metrics.max_drawdown:.2%}")
-```
-
-#### Bayesian Optimization Example
-
-```python
-def objective(params):
-    """Objective function to minimize (negative Sharpe ratio)."""
-    entry_threshold = params["entry_threshold"]
-    exit_threshold = params["exit_threshold"]
-    stop_loss = params["stop_loss"]
-    lookback = int(params["lookback_window"])
-
-    # Recalculate z-score with new lookback
-    zscore = calc.calculate_zscore(spread, lookback=lookback)
-
-    # Generate signals
-    signal_gen = SignalGenerator(entry_threshold, exit_threshold, stop_loss)
-    signals = signal_gen.generate_signals(zscore)
-
-    # Backtest
-    result = backtester.run_backtest(prices, signals, weights)
-
-    # Return negative Sharpe (we minimize)
-    return -result.metrics.sharpe_ratio
-
-# Define parameter space
-parameter_space = {
-    "entry_threshold": (1.5, 3.0),
-    "exit_threshold": (0.2, 1.0),
-    "stop_loss": (3.0, 5.0),
-    "lookback_window": (60.0, 504.0),
-}
-
-# Run optimization
-optimizer = BayesianOptimizer(
-    objective_function=objective,
-    parameter_space=parameter_space,
-    n_initial_points=10,
-    n_iterations=50,
-    random_state=42
-)
-
-result = optimizer.optimize()
-print(f"Best Sharpe: {-result.best_score:.3f}")
-print(f"Best Params: {result.best_params}")
-```
-
----
-
-## Further Implementation Ideas
-
-### 1. Dynamic Cointegration Monitoring
-
-**Problem**: Cointegration relationships can break down over time due to regime changes.
-
-**Solution**: Implement rolling window cointegration tests:
-
-```python
-def rolling_cointegration_test(prices: pd.DataFrame, window: int = 252) -> pd.Series:
-    """
-    Test cointegration on rolling windows.
-
-    Returns
-    -------
-    pd.Series
-        Time series of p-values. Values < 0.05 indicate cointegration.
-    """
-    p_values = []
-    dates = []
-
-    for i in range(window, len(prices)):
-        window_prices = prices.iloc[i-window:i]
-
-        try:
-            result = coint_engine.test_cointegration(window_prices)
-            p_values.append(result.p_value)
-            dates.append(prices.index[i])
-        except:
-            p_values.append(1.0)  # No cointegration
-            dates.append(prices.index[i])
-
-    return pd.Series(p_values, index=dates)
-```
-
-**Trading Rule**: Only trade when rolling p-value < 0.05 for the past N days.
-
-### 2. Multi-Basket Portfolio
-
-**Concept**: Diversify across multiple uncorrelated cointegrated baskets.
-
-```python
-baskets = [
-    {"tickers": ["JPM", "BAC", "GS"], "name": "banks"},
-    {"tickers": ["XOM", "CVX", "COP"], "name": "energy"},
-    {"tickers": ["JNJ", "PFE", "MRK"], "name": "pharma"},
-]
-
-portfolio_returns = pd.DataFrame()
-
-for basket in baskets:
-    # Run pipeline for each basket
-    result = run_pipeline(basket["tickers"], ...)
-    portfolio_returns[basket["name"]] = result.returns
-
-# Combine with equal weights or optimize weights via mean-variance
-total_returns = portfolio_returns.mean(axis=1)
-sharpe_ratio = total_returns.mean() / total_returns.std() * np.sqrt(252)
-```
-
-### 3. Kalman Filter for Dynamic Hedge Ratios
-
-Instead of static eigenvectors, use a Kalman filter to estimate time-varying hedge ratios:
-
-```python
-from pykalman import KalmanFilter
-
-def kalman_hedge_ratio(y: pd.Series, x: pd.DataFrame) -> pd.Series:
-    """
-    Estimate dynamic hedge ratio β_t in y_t = β_t·x_t + ε_t.
-    """
-    kf = KalmanFilter(
-        transition_matrices=[1],
-        observation_matrices=[x.values],
-        initial_state_mean=0,
-        initial_state_covariance=1,
-        observation_covariance=1,
-        transition_covariance=0.01
-    )
-
-    state_means, _ = kf.filter(y.values)
-    return pd.Series(state_means.flatten(), index=y.index)
-```
-
-### 4. Machine Learning for Signal Enhancement
-
-Augment z-score signals with ML features:
-
-```python
-from sklearn.ensemble import RandomForestClassifier
-
-# Features
-features = pd.DataFrame({
-    'zscore': zscore,
-    'zscore_ma': zscore.rolling(20).mean(),
-    'spread_volatility': spread.rolling(20).std(),
-    'half_life': spread.rolling(60).apply(lambda x: calculate_half_life(x)),
-    'hurst': spread.rolling(60).apply(lambda x: calculate_hurst_exponent(x)),
-    'rsi': calculate_rsi(spread, period=14),
-    'volume_ratio': volume.rolling(20).mean() / volume.rolling(60).mean(),
-})
-
-# Labels: 1 if profitable in next N days, 0 otherwise
-labels = (result.returns.shift(-5).rolling(5).sum() > 0).astype(int)
-
-# Train classifier
-clf = RandomForestClassifier(n_estimators=100)
-clf.fit(features.dropna(), labels.dropna())
-
-# Use predictions to filter signals
-signal_strength = clf.predict_proba(features)[:, 1]
-enhanced_signals = signals * (signal_strength > 0.6)  # Only trade high-confidence
-```
-
-### 5. Transaction Cost Optimization
-
-Minimize rebalancing frequency using tolerance bands:
-
-```python
-def should_rebalance(current_position, target_position, tolerance=0.05):
-    """Only rebalance if deviation exceeds tolerance."""
-    deviation = abs(current_position - target_position) / abs(target_position)
-    return deviation > tolerance
-```
-
-### 6. Alternative Data Integration
-
-Incorporate sentiment, news, or options data:
-
-```python
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-
-# Scrape news for basket constituents
-news = fetch_news(tickers, start_date, end_date)
-
-# Calculate sentiment
-analyzer = SentimentIntensityAnalyzer()
-sentiment_scores = news['headline'].apply(lambda x: analyzer.polarity_scores(x)['compound'])
-
-# Use sentiment as a regime filter
-# Only trade when sentiment is neutral (avoid strong directional trends)
-trade_when = (sentiment_scores.abs() < 0.5)
-filtered_signals = signals * trade_when
-```
-
-### 7. Regime-Switching Models
-
-Use Hidden Markov Models to identify market regimes:
-
-```python
-from hmmlearn.hmm import GaussianHMM
-
-# Fit HMM to returns
-model = GaussianHMM(n_components=2, covariance_type="full")
-model.fit(returns.values.reshape(-1, 1))
-
-# Predict regimes
-regimes = model.predict(returns.values.reshape(-1, 1))
-
-# Only trade in mean-reverting regime
-mean_reverting_regime = regimes == 0  # Assuming regime 0 is low volatility
-filtered_signals = signals * mean_reverting_regime
-```
-
-### 8. Options-Based Hedging
-
-Use options to hedge tail risk:
-
-```python
-# Calculate portfolio delta
-portfolio_delta = (positions * prices).sum()
-
-# Purchase out-of-the-money puts to hedge downside
-hedge_strike = current_price * 0.95
-hedge_quantity = portfolio_delta * 0.5  # Hedge 50% of exposure
-```
-
----
-
-## References and Resources
-
-### Academic Papers
-
-1. **Engle, R. F., & Granger, C. W. J. (1987)**. "Co-integration and error correction: Representation, estimation, and testing." *Econometrica*, 55(2), 251-276.
-   - Foundational paper on cointegration and error correction models.
-
-2. **Johansen, S. (1991)**. "Estimation and hypothesis testing of cointegration vectors in Gaussian vector autoregressive models." *Econometrica*, 59(6), 1551-1580.
-   - The Johansen test for multivariate cointegration.
-
-3. **Gatev, E., Goetzmann, W. N., & Rouwenhorst, K. G. (2006)**. "Pairs trading: Performance of a relative-value arbitrage rule." *Review of Financial Studies*, 19(3), 797-827.
-   - Empirical analysis of pairs trading profitability.
-
-4. **Avellaneda, M., & Lee, J. H. (2010)**. "Statistical arbitrage in the US equities market." *Quantitative Finance*, 10(7), 761-782.
-   - Statistical arbitrage using PCA on baskets of stocks.
-
-5. **Pole, A. (2007)**. *Statistical Arbitrage: Algorithmic Trading Insights and Techniques*. Wiley.
-   - Comprehensive book on statistical arbitrage strategies.
-
-6. **Vidyamurthy, G. (2004)**. *Pairs Trading: Quantitative Methods and Analysis*. Wiley.
-   - Practical guide to pairs trading with cointegration.
-
-7. **Brochu, E., Cora, V. M., & de Freitas, N. (2010)**. "A tutorial on Bayesian optimization of expensive cost functions." *arXiv preprint arXiv:1012.2599*.
-   - Tutorial on Bayesian optimization with Gaussian Processes.
-
-8. **Mockus, J. (1974)**. "On Bayesian methods for seeking the extremum." *Optimization Techniques IFIP Technical Conference*, 400-404.
-   - Original work on Bayesian global optimization.
-
-### Books
-
-1. **Chan, E. P. (2013)**. *Algorithmic Trading: Winning Strategies and Their Rationale*. Wiley.
-   - Practical strategies including mean reversion and statistical arbitrage.
-
-2. **Chan, E. P. (2009)**. *Quantitative Trading: How to Build Your Own Algorithmic Trading Business*. Wiley.
-   - Foundation for building quantitative trading systems.
-
-3. **Tsay, R. S. (2010)**. *Analysis of Financial Time Series* (3rd ed.). Wiley.
-   - Comprehensive coverage of time series econometrics, ARIMA, GARCH, cointegration.
-
-4. **Hamilton, J. D. (1994)**. *Time Series Analysis*. Princeton University Press.
-   - Advanced treatment of time series methods including cointegration and VECM.
-
-5. **Enders, W. (2014)**. *Applied Econometric Time Series* (4th ed.). Wiley.
-   - Applied econometrics with focus on unit roots and cointegration.
-
-6. **de Prado, M. L. (2018)**. *Advances in Financial Machine Learning*. Wiley.
-   - Modern ML techniques for finance, including labeling, feature engineering, and backtesting.
-
-7. **Jansen, S. (2020)**. *Machine Learning for Algorithmic Trading* (2nd ed.). Packt.
-   - Practical ML applications in trading with Python code examples.
-
-### Online Resources
-
-1. **QuantStart**: https://www.quantstart.com/
-   - Tutorials on pairs trading, cointegration, and backtesting.
-
-2. **Hudson & Thames (Quantitative Research)**: https://hudsonthames.org/
-   - Open-source implementations of research (PortfolioLab, MlFinLab).
-
-3. **Quantopian Lectures** (Archive): https://www.quantopian.com/lectures
-   - Video lectures on statistical arbitrage, risk management, and portfolio optimization.
-
-4. **Statsmodels Documentation**: https://www.statsmodels.org/
-   - Python library for cointegration tests, VECM, and time series analysis.
-
-5. **Scikit-Optimize Documentation**: https://scikit-optimize.github.io/
-   - Bayesian optimization library used in this project.
-
-### Research Repositories
-
-1. **SSRN (Social Science Research Network)**: https://www.ssrn.com/
-   - Preprints of finance and economics research.
-
-2. **arXiv Quantitative Finance**: https://arxiv.org/archive/q-fin
-   - Open-access preprints of quantitative finance papers.
-
-3. **Journal of Portfolio Management**: https://jpm.pm-research.com/
-   - Peer-reviewed research on portfolio management and trading strategies.
-
-### Software Libraries
-
-1. **statsmodels**: Time series analysis, cointegration tests
-2. **scikit-optimize**: Bayesian optimization
-3. **scikit-learn**: Machine learning, regression
-4. **yfinance**: Market data retrieval
-5. **pandas**: Data manipulation
-6. **numpy**: Numerical computing
-7. **scipy**: Scientific computing, statistics
-8. **matplotlib/seaborn**: Visualization
-9. **pytest**: Testing framework
-10. **hypothesis**: Property-based testing
-
----
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome. Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass (`pytest tests/`)
-5. Submit a pull request
+## Things this does not do
+
+- **Survivorship and selection bias are not solved.** Round two uses ETFs, which mostly sidesteps the
+  problem of delisted companies, but the funds in it are ones that still exist today, and I picked the
+  families.
+- **The cointegration test is looser than its label.** With the deterministic term I use, it rejects
+  about 12% of the time on driftless random walks at a nominal 5%. A bootstrap version would fix this
+  and is the next thing on the list.
+- **Execution is simplified.** Next close, flat cost per side. No bid-ask dynamics, no market impact, no
+  borrow recalls, no limit orders. Fractional shares, no interest on idle cash.
+- **The statistics are approximate in places.** The p-values behind the false-discovery correction are
+  asymptotic, and the pairs are correlated with each other.
+- **One frequency, one design.** Daily bars, two-year estimation, six-month trading. Other choices might
+  behave differently, and testing them properly means a new protocol and a fresh universe, not a tweak.
+
+## Where I would go next
+
+Not another parameter. The result says the gross edge at daily frequency is about the size of the spread
+you cross, so the next version has to change that arithmetic:
+
+1. **Trade where the spread is bigger relative to costs.** Intraday, or at least passive execution with
+   limit orders instead of paying to cross at the close.
+2. **Trade residuals from a factor model** rather than pairwise cointegration, which gives many more and
+   larger deviations to work with (Avellaneda and Lee's approach).
+3. **Use relationships that are structurally tight**, like dual-listed shares or ETF creation and
+   redemption, while accepting those are crowded precisely because they are reliable.
+4. **Fix the test properly** with a bootstrap rank test, so the filter means what it says.
+
+Each of those would be a new protocol file, frozen before running, on an evaluation set it has not seen.
+
+## References
+
+- Johansen, S. (1991). Estimation and hypothesis testing of cointegration vectors in Gaussian vector
+  autoregressive models. *Econometrica*, 59(6).
+- Engle, R. F. and Granger, C. W. J. (1987). Co-integration and error correction. *Econometrica*, 55(2).
+- Gatev, E., Goetzmann, W. N. and Rouwenhorst, K. G. (2006). Pairs trading: performance of a
+  relative-value arbitrage rule. *Review of Financial Studies*, 19(3).
+- Do, B. and Faff, R. (2010). Does simple pairs trading still work? *Financial Analysts Journal*, 66(4).
+- Krauss, C. (2017). Statistical arbitrage pairs trading strategies: review and outlook. *Journal of
+  Economic Surveys*.
+- Avellaneda, M. and Lee, J.-H. (2010). Statistical arbitrage in the US equities market. *Quantitative
+  Finance*, 10(7).
+- Bailey, D. H. and López de Prado, M. (2012). The Sharpe ratio efficient frontier. *Journal of Risk*,
+  15(2). And (2014), The deflated Sharpe ratio. *Journal of Portfolio Management*, 40(5).
+- Benjamini, Y. and Hochberg, Y. (1995). Controlling the false discovery rate. *JRSS B*, 57(1).
+- Harvey, C. R., Liu, Y. and Zhu, H. (2016). ... and the cross-section of expected returns. *Review of
+  Financial Studies*, 29(1).
+- Cavaliere, G., Rahbek, A. and Taylor, A. M. R. (2012). Bootstrap determination of the co-integration
+  rank in vector autoregressive models. *Econometrica*, 80(4).
+- Künsch, H. R. (1989). The jackknife and the bootstrap for general stationary observations. *Annals of
+  Statistics*, 17(3).
 
 ## Disclaimer
 
-This software is for educational and research purposes only. It is not financial advice. Trading involves risk, and you can lose money. The authors are not responsible for any financial losses incurred through use of this software. Always perform thorough backtesting and paper trading before deploying real capital.
-
-
-
----
-
-**Last Updated**: November 19, 2025
+Research and education only. Not investment advice, and certainly not a recommendation to trade any of
+this.

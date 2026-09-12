@@ -1,0 +1,62 @@
+# DRAFT v3 protocol - NOT FROZEN, NOT RUN.
+#
+# Nothing reads this file yet. It exists so the v3 changes in docs/RESEARCH_V3.md have a concrete
+# shape to argue about. Before any v3 run: implement the rules, delete this notice, fix the values,
+# commit the file, and only then run. Its SHA-256 is recorded in every result, which is what makes
+# "pre-registered" checkable rather than a claim.
+#
+# Changes from v2 (config/config.yaml), each motivated by a measured v2 failure:
+#   C1 max_net_exposure   - half of v2's traded folds were directional, not hedged
+#   C2 stop_loss_fraction - a z-score stop never fired while a trade lost 52%
+#   C2 max_holding_days   - positions that stop reverting should be released
+#   C3 target_volatility  - fixed 1x gross made risk per trade arbitrary
+# Everything else is deliberately identical to v2 so any difference is attributable.
+
+data:
+  snapshot_dir: data/snapshots
+  max_missing_fraction: 0.02
+
+walk_forward:
+  formation_days: 504
+  trading_days: 126
+  significance: 0.05
+  det_order: 0                 # replace with the bootstrap rank test (C4) in v3.1
+  k_ar_diff: 1
+  require_cointegration: true
+  max_half_life_days: 126      # never bound in v2 (traded half-lives were 7-30 days); revisit or drop
+  max_net_exposure: 0.20       # C1: |sum(w)| / sum(|w|); above this the fold is not traded
+
+strategy:
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 4.0                  # kept as a signal-level exit only
+  lookback: 60
+  max_holding_days: 36         # C2: ~3x the median formation half-life observed in v2
+
+backtest:
+  initial_capital: 100000
+  target_volatility: 0.10      # C3: annualised risk target for the spread position
+  max_gross: 1.0               # cap, so a low-volatility spread cannot lever without limit
+  stop_loss_fraction: 0.10     # C2: close at a 10% loss against equity at entry
+  cost_bps: 5.0
+  borrow_bps_annual: 50.0
+  execution_lag: 1
+
+optimization:
+  # v3.0 runs fixed thresholds only. Re-enable tuning only when its value can be shown, or replace it
+  # with model-implied thresholds (C7, Bertram 2010).
+  enabled: false
+
+evaluation:
+  # C5: the screened universe is the headline; the five v2 baskets are design data and reported apart.
+  universe_file: config/universe_v3.yaml    # to be written
+  multiple_testing: benjamini_hochberg
+  fdr_level: 0.10
+  design_set_baskets: [us_money_center_banks, integrated_oil_xom_cvx, consumer_staples_ko_pep,
+                       commodity_countries_ewa_ewc, control_tsla_nflx_pltr]
+
+reporting:
+  cost_sensitivity_bps: [0.0, 5.0, 10.0, 20.0]
+  bootstrap_samples: 2000
+  bootstrap_block: 20
+  seed: 7

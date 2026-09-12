@@ -1,0 +1,64 @@
+# Research protocol v3.0. Frozen on 2026-09-11, before any v3 result existed.
+# Supersedes the sketch in config/config_v3_draft.yaml.
+#
+# v3.0 changes exactly three things against v2 (config/config.yaml). Each one answers a
+# failure measured in the v2 results and written up in docs/RESEARCH_V3.md; nothing else
+# moves, so any difference in outcome is attributable.
+#
+#   1. walk_forward.max_net_exposure  - v2 traded unhedged baskets in half of its folds
+#   2. backtest.stop_loss_fraction    - a z-score stop never fired while a trade lost 52%
+#      backtest.max_holding_bars      - and positions that stop reverting should be released
+#   3. backtest.target_volatility     - fixed 1x gross made risk per trade arbitrary
+#
+# Because these were chosen after seeing v2's out-of-sample results, v2's five baskets are
+# design data. v3 is evaluated on the separate universe in config/universe_v3.yaml.
+
+data:
+  snapshot_dir: data/snapshots
+  max_missing_fraction: 0.02
+
+walk_forward:
+  formation_days: 504
+  trading_days: 126
+  significance: 0.05
+  det_order: 0                 # known to over-reject on driftless prices; the bootstrap test is v3.1
+  k_ar_diff: 1
+  require_cointegration: true
+  max_half_life_days: 126
+  max_net_exposure: 0.20       # |sum(w)| / sum(|w|): above this the basket is directional, not a spread
+
+strategy:                      # unchanged from v2, so the three rules above are the only difference
+  entry_z: 2.0
+  exit_z: 0.5
+  stop_z: 4.0
+  lookback: 60
+
+backtest:
+  initial_capital: 100000
+  target_volatility: 0.10      # annualised risk target for the spread position
+  max_gross: 1.0               # never lever beyond 1x equity, whatever the volatility estimate says
+  stop_loss_fraction: 0.10     # close at a 10% loss against equity at entry (cut zero winners in v2)
+  max_holding_bars: 36         # ~3x the median formation half-life seen in v2 (12 days)
+  cost_bps: 5.0
+  borrow_bps_annual: 50.0
+  execution_lag: 1
+
+optimization:
+  # v3.0 runs fixed thresholds only. Tuning cost more than it gained in v2 (in-sample Sharpe
+  # 1.6-2.2 against out-of-sample -0.6-0.5), so it has to earn its place again in a later version.
+  # These bounds are here only to satisfy the config schema; no v3.0 run uses them.
+  n_calls: 40
+  n_initial_points: 12
+  min_trades: 3
+  random_state: 42
+  space:
+    entry_z: [1.0, 3.0]
+    exit_fraction: [0.0, 0.8]
+    stop_offset: [0.5, 3.0]
+    lookback: [20, 252]
+
+reporting:
+  cost_sensitivity_bps: [0.0, 5.0, 10.0, 20.0]
+  bootstrap_samples: 2000
+  bootstrap_block: 20
+  seed: 7
