@@ -168,9 +168,9 @@ The **half-life** is the horizon at which half of a deviation is expected to hav
 h_{1/2} = \frac{\ln 0.5}{\ln \phi}
 ```
 
-In practice $\phi$ is estimated by the regression $\Delta S_t = a + b\,S_{t-1} + e_t$, so that $\phi = 1 + b$
+In practice $\phi$ is estimated by the regression $`\Delta S_t = a + b\,S_{t-1} + e_t`$, so that $\phi = 1 + b$
 ([src/cointegration/spread.py](src/cointegration/spread.py)). This is the discrete-time version of the
-Ornstein-Uhlenbeck process $dS = \theta(\mu - S)\,dt + \sigma\,dW$, for which $\phi = e^{-\theta}$ and the half-life
+Ornstein-Uhlenbeck process $`dS = \theta(\mu - S)\,dt + \sigma\,dW`$, for which $\phi = e^{-\theta}$ and the half-life
 is $\ln 2 / \theta$. If $\phi \ge 1$ there is no mean reversion and the half-life is infinite.
 
 ![Half-life decay](docs/figures/half_life_decay.png)
@@ -198,6 +198,7 @@ threshold 4:
 
 ```mermaid
 stateDiagram-v2
+    direction LR
     [*] --> Flat
     Flat --> Long: z at or below -2 (and above -4)
     Flat --> Short: z at or above +2 (and below +4)
@@ -229,7 +230,8 @@ position and leaves an open position unchanged.
 flowchart LR
     subgraph Inputs
         P["config/config.yaml<br/>config/config_v3.yaml<br/>protocol, SHA-256 recorded"]
-        U["config/case_studies.yaml<br/>config/universe_v3.yaml<br/>what is tested"]
+        UC["config/case_studies.yaml<br/>the five baskets"]
+        UV["config/universe_v3.yaml<br/>the 60-pair universe"]
         D["data/snapshots<br/>price files, SHA-256 recorded"]
     end
     subgraph Engine["src"]
@@ -248,7 +250,8 @@ flowchart LR
         RD["README results table<br/>generated and tested"]
     end
     P --> WF
-    U --> UN
+    UC --> WF
+    UV --> UN
     D --> MD --> CO --> WF
     OP --> WF
     WF --> SG --> BT --> ME
@@ -315,7 +318,7 @@ costs do. The details that matter:
   Shares are then held constant until exit, with no daily rebalancing.
 - **Volatility targeting (v3.0).** The gross multiple is $\min\left(g_{\max},\ \sigma^{\star} / \hat\sigma_S\right)$,
   where $\hat\sigma_S = \mathrm{sd}(\Delta S)\sqrt{252}$ is estimated on the formation window and
-  $\sigma^{\star} = 10\%$, $g_{\max} = 1$.
+  $`\sigma^{\star} = 10\%`$, $g_{\max} = 1$.
 - **Risk stops (v3.0).** A loss stop closes a position once it has lost 10% of the equity it was sized on, and a
   time stop closes it after 36 days. After a risk stop, the same direction cannot be re-entered until the signal
   resets.
@@ -390,7 +393,7 @@ ordinary bootstrap would understate uncertainty. The 95% interval is built from 
 all, and Harvey, Liu and Zhu (2016) show how widespread this problem is in empirical finance. Experiment 2
 converts each pair's PSR into a one-sided p-value $1 - \mathrm{PSR}$, sorts them
 $p_{(1)} \le \dots \le p_{(m)}$, and applies the Benjamini-Hochberg procedure (Benjamini and Hochberg, 1995) at
-level $q = 10\%$:
+level $`q = 10\%`$:
 
 ```math
 k = \max\left\{ i : p_{(i)} \le \frac{i}{m}\,q \right\}, \qquad \text{reject every } p \le p_{(k)}
@@ -645,8 +648,9 @@ The success criteria were written in [docs/RESEARCH_V3.md](docs/RESEARCH_V3.md) 
 
 - *Promising* required a positive median out-of-sample Sharpe and more significant pairs than chance would
   produce. The median was -0.14 and there were no significant pairs: **not met**.
-- *Not promising* was defined as a median Sharpe at or below zero across at least 50 pairs. The median was -0.14
-  across 60 pairs: **met**.
+- *Not promising* was defined as a median Sharpe at or below zero across at least 50 pairs. All 60 pairs were
+  evaluated and 42 traded. The median across those 42 was -0.14; the 18 that never traded have no Sharpe ratio,
+  and counting them as zero gives a median of 0.00 across all 60, still at or below zero: **met**.
 
 The conclusion was therefore fixed before it was observed: **daily cointegration pairs trading on this universe,
 with these costs, does not produce an edge.** The v3.0 rules did what they were designed to do. They removed

@@ -95,8 +95,9 @@ Fold decisions frozen, only the cost model changed (borrow still charged):
 
 * **Promising** if the median out-of-sample Sharpe is above zero *and* the count of PSR > 0.95 pairs
   after Benjamini-Hochberg exceeds the null expectation. Median -0.140 and zero discoveries: **not met**.
-* **Not promising** if the median is at or below zero across at least 50 baskets. 60 pairs, median
-  -0.140: **met**.
+* **Not promising** if the median is at or below zero across at least 50 baskets. All 60 pairs were
+  evaluated and 42 traded. The median across those 42 is -0.140; the 18 that never traded have no Sharpe
+  ratio, and counting them as zero gives a median of 0.00 across all 60, still at or below zero: **met**.
 
 So the pre-registered conclusion stands: **daily cointegration pairs trading on this universe, with
 these costs, does not work**, and the three v3 rules did not change that. They did what they were
