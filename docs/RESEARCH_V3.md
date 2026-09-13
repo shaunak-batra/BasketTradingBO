@@ -1,8 +1,10 @@
 # v3 research memo
 
-**Status: draft. Nothing here is frozen and nothing has been run.** v2 stays exactly as it is
-(`config/config.yaml`, results in `results/case_studies/`). This memo collects the evidence for what
-to change, and the rules under which a v3 could be tested honestly.
+**Status: written before v3.0 was run.** The v3.0 scope in section 4 was then frozen as
+`config/config_v3.yaml`, with the universe in `config/universe_v3.yaml`, and the success criteria in section 5
+were fixed before the run. Results are in [RESULTS_V3.md](RESULTS_V3.md). The other candidates (C4 to C8) are
+still proposals. v2 stays exactly as it is (`config/config.yaml`, results in `results/case_studies/`). This memo
+collects the evidence for what to change, and the rules under which a v3 could be tested honestly.
 
 ## 1. What v2 actually showed
 
@@ -66,8 +68,8 @@ including the failures, and **change one thing per version** so that any differe
   signal-level exit. Stop-losses at a residual band (e.g. 4σ) and minimum-profit constructions are both
   standard in the pairs literature.
 * **Code.** Execution-level rule inside [src/backtesting/backtester.py](../src/backtesting/backtester.py)
-  (the backtester gains a `stop_loss_fraction`, checked against equity at entry), plus `max_holding_bars` in
-  the signal state machine.
+  (the backtester gains a `stop_loss_fraction`, checked against equity at entry), plus `max_holding_bars`, also
+  checked in the backtester.
 * **Test.** A constructed losing path must exit on the bar the threshold is breached, with the ledger
   reason recorded; no effect when the threshold is not breached.
 * **Effort.** Small. **Expected effect:** truncates the left tail. It cannot create edge.

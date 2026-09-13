@@ -53,7 +53,7 @@ data/
 # v1 outputs produced by the old, incorrect backtester are archived locally only.
 results/_legacy_v1/
 results/scratch/
-figures/
+/figures/
 models/
 logs/
 test_results/

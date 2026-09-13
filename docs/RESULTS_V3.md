@@ -54,18 +54,19 @@ years. There is no meaningful gross edge to recover, let alone one that survives
 | GLD/IAU | 24 of 26 | 119 | 0.6%/yr | **0.53 bps** | **10.3 bps** | **-2.80** | +0.22 |
 | IVV/SPY | 16 of 26 | 71 | 0.3%/yr | **0.51 bps** | **10.2 bps** | **-2.43** | +0.21 |
 
-These two pairs traded more folds than any real candidate, which is exactly right: they are genuinely
-cointegrated, and the pipeline found it. **The machinery works.** They were also the two worst
-performers in the universe, because the spread they capture is roughly twenty times smaller than the
-cost of capturing it.
+GLD/IAU traded more folds than any other pair in the universe, and IVV/SPY was third, behind only
+HYG/JNK. That is exactly right: they are genuinely cointegrated, and the pipeline found it. **The
+machinery works.** They also had the two lowest Sharpe ratios in the universe, because the spread they
+capture is roughly twenty times smaller than the cost of capturing it.
 
 That is the whole result in miniature: where cointegration is unambiguous, the tradable spread is
 tiny; where the spread is large enough to pay for trading, the cointegration is not stable.
 
 ## Why leverage cannot rescue it
 
-Volatility targeting wanted large positions in these quiet spreads (a 10% target against 0.6%
-volatility implies about 17x), and `max_gross: 1.0` capped it. Lifting that cap would not help.
+Volatility targeting wanted large positions in these quiet spreads (a 10% target against their
+volatility implies about 17x gross for GLD/IAU and 33x for IVV/SPY), and `max_gross: 1.0` capped it.
+Lifting that cap would not help.
 P&L per trade and cost per trade are both proportional to notional:
 
 ```
@@ -99,9 +100,10 @@ Fold decisions frozen, only the cost model changed (borrow still charged):
 
 So the pre-registered conclusion stands: **daily cointegration pairs trading on this universe, with
 these costs, does not work**, and the three v3 rules did not change that. They did what they were
-designed to do, which was narrower: the hedging filter removed 102 directional folds, the loss stop
-fired 10 times in 542 trades, and risk per trade became comparable across pairs. Cleaner risk, same
-absent edge.
+designed to do, which was narrower: the hedging filter removed 102 directional folds, the 36-day time
+stop closed 69 of the 542 trades, and risk per trade became comparable across pairs. The 10% loss stop
+never fired: once positions were hedged and sized by risk, no trade lost 10% of the equity it was sized
+on. (The z-score stop fired 10 times.) Cleaner risk, same absent edge.
 
 ## What would change the conclusion
 

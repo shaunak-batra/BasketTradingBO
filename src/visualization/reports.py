@@ -158,13 +158,21 @@ def write_report(
     trading_table = _key_values(
         [
             ("Folds traded", f"{fold_counts['n_traded']} of {fold_counts['n_folds']}"),
-            ("Skipped: not cointegrated / half-life / no in-sample edge", f"{fold_counts['n_not_cointegrated']} / {fold_counts['n_half_life_too_long']} / {fold_counts['n_no_in_sample_edge']}"),
+            (
+                "Skipped: not cointegrated / not hedged / half-life / no in-sample edge",
+                f"{fold_counts['n_not_cointegrated']} / {fold_counts.get('n_not_hedged', 0)} / "
+                f"{fold_counts['n_half_life_too_long']} / {fold_counts['n_no_in_sample_edge']}",
+            ),
             ("Closed round trips", fmt_num(performance["n_trades"])),
             ("Win rate (per round trip)", fmt_pct(performance["win_rate"], 1)),
             ("Profit factor", fmt_num(performance["profit_factor"])),
             ("Average trade return on equity", fmt_pct(performance["avg_trade_return"], 3)),
             ("Average holding period", f"{fmt_num(performance['avg_holding_days'], 1)} days"),
-            ("Stop-loss exits", fmt_num(performance["n_stop_losses"])),
+            (
+                "Stop exits: z-score / loss / time",
+                f"{fmt_num(performance['n_zscore_stops'])} / {fmt_num(performance['n_loss_stops'])} / "
+                f"{fmt_num(performance['n_time_stops'])}",
+            ),
             ("Time in market", fmt_pct(performance["time_in_market"], 1)),
             ("Annual turnover (x equity)", fmt_num(performance["turnover_annual"], 1)),
             ("Trading costs / borrow costs ($)", f"{fmt_num(performance['total_trading_cost'])} / {fmt_num(performance['total_borrow_cost'])}"),

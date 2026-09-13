@@ -9,9 +9,9 @@
     "start": "2020-10-01",
     "end_exclusive": "2025-01-01",
     "mode": "optimized",
-    "created_utc": "2026-09-11T23:39:30+00:00",
+    "created_utc": "2026-09-13T17:03:13+00:00",
     "git": {
-      "commit": "65cd52cb9b402af0cb2c703e557099266999bf28",
+      "commit": "fe031d5151ab00ba2061312ddf58e31964987565",
       "dirty": true
     },
     "python": "3.10.11",
@@ -41,7 +41,8 @@
       "det_order": 0,
       "k_ar_diff": 1,
       "require_cointegration": true,
-      "max_half_life_days": 126
+      "max_half_life_days": 126,
+      "max_net_exposure": null
     },
     "strategy": {
       "entry_z": 2.0,
@@ -52,6 +53,10 @@
     "backtest": {
       "initial_capital": 100000,
       "gross_exposure": 1.0,
+      "target_volatility": null,
+      "max_gross": 1.0,
+      "stop_loss_fraction": null,
+      "max_holding_bars": null,
       "cost_bps": 5.0,
       "borrow_bps_annual": 50.0,
       "execution_lag": 1
@@ -124,6 +129,7 @@
     "n_folds": 5,
     "n_traded": 3,
     "n_not_cointegrated": 2,
+    "n_not_hedged": 0,
     "n_half_life_too_long": 0,
     "n_no_in_sample_edge": 0
   },
@@ -154,7 +160,9 @@
     "profit_factor": 0.9214654690098436,
     "avg_trade_return": -7.683746243516282e-05,
     "avg_holding_days": 15.125,
-    "n_stop_losses": 1
+    "n_zscore_stops": 1,
+    "n_loss_stops": 0,
+    "n_time_stops": 0
   },
   "cost_sensitivity": [
     {
@@ -231,6 +239,9 @@
       "trace_critical": 29.7961,
       "cointegrated": true,
       "half_life_days": 28.78845870509108,
+      "net_exposure": 0.6150514659822917,
+      "sizing_volatility": 0.42285958855914896,
+      "target_gross": 1.0,
       "traded": true,
       "skip_reason": "",
       "weight_TSLA": 0.5836238312706015,
@@ -258,6 +269,9 @@
       "trace_critical": 29.7961,
       "cointegrated": false,
       "half_life_days": 59.2651627980672,
+      "net_exposure": 0.6729028533639025,
+      "sizing_volatility": 0.37916330026894923,
+      "target_gross": 1.0,
       "traded": false,
       "skip_reason": "not cointegrated (trace 22.34 <= critical 29.80)",
       "weight_TSLA": 0.5889704594644407,
@@ -285,6 +299,9 @@
       "trace_critical": 29.7961,
       "cointegrated": true,
       "half_life_days": 29.706423851934904,
+      "net_exposure": 0.363266034225139,
+      "sizing_volatility": 0.2913551922010771,
+      "target_gross": 1.0,
       "traded": true,
       "skip_reason": "",
       "weight_TSLA": 0.4680913531493513,
@@ -312,6 +329,9 @@
       "trace_critical": 29.7961,
       "cointegrated": false,
       "half_life_days": 18.485357265731096,
+      "net_exposure": 0.5289274452224304,
+      "sizing_volatility": 0.30814175028937213,
+      "target_gross": 1.0,
       "traded": false,
       "skip_reason": "not cointegrated (trace 25.87 <= critical 29.80)",
       "weight_TSLA": 0.4656682831275821,
@@ -339,6 +359,9 @@
       "trace_critical": 29.7961,
       "cointegrated": true,
       "half_life_days": 10.11432648054639,
+      "net_exposure": 0.4040818086466024,
+      "sizing_volatility": 0.23179020985104656,
+      "target_gross": 1.0,
       "traded": true,
       "skip_reason": "",
       "weight_TSLA": 0.22053554328083336,

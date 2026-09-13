@@ -1,4 +1,4 @@
-# v3.0 universe run (2026-09-12T06:19:08+00:00)
+# v3.0 universe run (2026-09-13T17:01:10+00:00)
 
 Protocol `config_v3.yaml` (sha256 b864faaec874), universe `universe_v3.yaml`, price snapshot sha256 81b0afe1ec01.
 
@@ -6,6 +6,7 @@ Protocol `config_v3.yaml` (sha256 b864faaec874), universe `universe_v3.yaml`, pr
 
 - pairs defined: 60, evaluated: 60, skipped for data: 0
 - pairs that traded at least once: 42; round trips: 542
+- stop exits: z-score 10, loss 0, time 69
 - folds traded: 176 of 1560 (11.3%); skipped as not cointegrated 1276, not hedged 102, half-life 6
 - median out-of-sample Sharpe: -0.140 with costs, -0.019 with no frictions
 - positive Sharpe: 14 of 42 with costs, 20 with no frictions

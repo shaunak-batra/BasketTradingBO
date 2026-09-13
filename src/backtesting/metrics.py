@@ -169,7 +169,12 @@ def block_bootstrap_sharpe_ci(
 
 
 def trade_statistics(trades: pd.DataFrame) -> dict[str, float]:
-    """Round-trip statistics from closed trades (open positions are excluded)."""
+    """Round-trip statistics from closed trades (open positions are excluded).
+
+    Stop exits are counted by kind, because they answer different questions: a z-score stop
+    fires when the spread diverges past ``stop_z``, a loss stop when the position loses a set
+    fraction of the equity it was sized on, and a time stop when it has been held too long.
+    """
     closed = trades.loc[~trades["is_open"].astype(bool)] if len(trades) else trades
     n_trades = int(len(closed))
     if n_trades == 0:
@@ -179,7 +184,9 @@ def trade_statistics(trades: pd.DataFrame) -> dict[str, float]:
             "profit_factor": math.nan,
             "avg_trade_return": math.nan,
             "avg_holding_days": math.nan,
-            "n_stop_losses": 0,
+            "n_zscore_stops": 0,
+            "n_loss_stops": 0,
+            "n_time_stops": 0,
         }
     pnl = closed["net_pnl"].to_numpy(dtype=float)
     gains = pnl[pnl > 0].sum()
@@ -188,13 +195,16 @@ def trade_statistics(trades: pd.DataFrame) -> dict[str, float]:
         profit_factor = float(gains / losses)
     else:
         profit_factor = math.inf if gains > 0 else math.nan
+    reasons = closed["exit_reason"]
     return {
         "n_trades": n_trades,
         "win_rate": float((pnl > 0).mean()),
         "profit_factor": profit_factor,
         "avg_trade_return": float(closed["return_on_equity"].mean()),
         "avg_holding_days": float(closed["holding_bars"].mean()),
-        "n_stop_losses": int((closed["exit_reason"] == "stop").sum()),
+        "n_zscore_stops": int((reasons == "stop").sum()),
+        "n_loss_stops": int((reasons == "stop_loss").sum()),
+        "n_time_stops": int((reasons == "time_stop").sum()),
     }
 
 

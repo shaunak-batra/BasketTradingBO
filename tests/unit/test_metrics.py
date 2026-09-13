@@ -92,7 +92,7 @@ def test_trade_statistics_use_closed_round_trips_only():
             "net_pnl": [100.0, -50.0, 25.0, 999.0],
             "return_on_equity": [0.01, -0.005, 0.0025, 0.1],
             "holding_bars": [5, 3, 4, 1],
-            "exit_reason": ["exit", "stop", "exit", "open"],
+            "exit_reason": ["time_stop", "stop", "stop_loss", "open"],
             "is_open": [False, False, False, True],
         }
     )
@@ -101,7 +101,8 @@ def test_trade_statistics_use_closed_round_trips_only():
     assert result["win_rate"] == pytest.approx(2 / 3)
     assert result["profit_factor"] == pytest.approx(125 / 50)
     assert result["avg_holding_days"] == pytest.approx(4.0)
-    assert result["n_stop_losses"] == 1
+    # Each kind of stop is counted separately; the open position's reason is ignored.
+    assert (result["n_zscore_stops"], result["n_loss_stops"], result["n_time_stops"]) == (1, 1, 1)
 
 
 def test_trade_statistics_without_trades_are_undefined_not_zero():

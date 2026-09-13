@@ -143,7 +143,9 @@ def evaluate_pair(prices: pd.DataFrame, protocol) -> tuple[dict, pd.Series, pd.S
         "n_half_life": sum(reason.startswith("half-life") for reason in reasons),
         "n_trades": trades["n_trades"],
         "win_rate": trades["win_rate"],
-        "n_stop_losses": trades["n_stop_losses"],
+        "n_zscore_stops": trades["n_zscore_stops"],
+        "n_loss_stops": trades["n_loss_stops"],
+        "n_time_stops": trades["n_time_stops"],
         "total_return": float(equity.iloc[-1] / equity.iloc[0] - 1.0),
         "sharpe": sharpe_ratio(returns),
         "psr": psr,
@@ -220,7 +222,9 @@ def summarise(pairs_frame: pd.DataFrame) -> dict:
         "n_folds_not_hedged": int(pairs_frame["n_not_hedged"].sum()),
         "n_folds_half_life": int(pairs_frame["n_half_life"].sum()),
         "n_round_trips": int(pairs_frame["n_trades"].sum()),
-        "n_stop_losses": int(pairs_frame["n_stop_losses"].sum()),
+        "n_zscore_stops": int(pairs_frame["n_zscore_stops"].sum()),
+        "n_loss_stops": int(pairs_frame["n_loss_stops"].sum()),
+        "n_time_stops": int(pairs_frame["n_time_stops"].sum()),
         "median_sharpe": float(traded["sharpe"].median()) if len(traded) else math.nan,
         "median_sharpe_frictionless": float(traded["sharpe_frictionless"].median()) if len(traded) else math.nan,
         "n_positive_sharpe": int((traded["sharpe"] > 0).sum()),
@@ -336,6 +340,8 @@ def render_markdown(summary: dict, pairs: pd.DataFrame) -> str:
         f"- pairs defined: {summary['n_pairs_defined']}, evaluated: {tested['n_evaluated']}, "
         f"skipped for data: {summary['n_pairs_skipped']}",
         f"- pairs that traded at least once: {tested['n_with_trades']}; round trips: {tested['n_round_trips']}",
+        f"- stop exits: z-score {tested['n_zscore_stops']}, loss {tested['n_loss_stops']}, "
+        f"time {tested['n_time_stops']}",
         f"- folds traded: {tested['n_folds_traded']} of {tested['n_folds_total']} "
         f"({tested['n_folds_traded'] / tested['n_folds_total']:.1%}); skipped as not cointegrated "
         f"{tested['n_folds_not_cointegrated']}, not hedged {tested['n_folds_not_hedged']}, "
