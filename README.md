@@ -184,7 +184,7 @@ Deviations are measured in units of their own recent variability. For a lookback
 to and including $t$:
 
 ```math
-z_t = \frac{S_t - \bar S_{t-L+1:t}}{\operatorname{sd}\left(S_{t-L+1:t}\right)}
+z_t = \frac{S_t - \bar S_{t-L+1:t}}{\mathrm{sd}\left(S_{t-L+1:t}\right)}
 ```
 
 The z-score is undefined until $L$ observations exist. There is no expanding-window warm-up, so early signals
@@ -314,7 +314,7 @@ costs do. The details that matter:
 - **Sizing.** At entry, gross notional is a multiple of current equity, split across assets by $w_i / \sum_j |w_j|$.
   Shares are then held constant until exit, with no daily rebalancing.
 - **Volatility targeting (v3.0).** The gross multiple is $\min\left(g_{\max},\ \sigma^{\star} / \hat\sigma_S\right)$,
-  where $\hat\sigma_S = \operatorname{sd}(\Delta S)\sqrt{252}$ is estimated on the formation window and
+  where $\hat\sigma_S = \mathrm{sd}(\Delta S)\sqrt{252}$ is estimated on the formation window and
   $\sigma^{\star} = 10\%$, $g_{\max} = 1$.
 - **Risk stops (v3.0).** A loss stop closes a position once it has lost 10% of the equity it was sized on, and a
   time stop closes it after 36 days. After a risk stop, the same direction cannot be re-entered until the signal
@@ -333,7 +333,7 @@ mean $\mu(x)$ and uncertainty $\sigma(x)$ at every untried point. The next point
 Improvement** (Jones, Schonlau and Welch, 1998) over the best value so far, $f^{\star}$:
 
 ```math
-\operatorname{EI}(x) = \left(\mu(x) - f^{\star} - \xi\right)\Phi(Z) + \sigma(x)\,\varphi(Z), \qquad Z = \frac{\mu(x) - f^{\star} - \xi}{\sigma(x)}
+\mathrm{EI}(x) = \left(\mu(x) - f^{\star} - \xi\right)\Phi(Z) + \sigma(x)\,\varphi(Z), \qquad Z = \frac{\mu(x) - f^{\star} - \xi}{\sigma(x)}
 ```
 
 Here $\xi = 0.01$ is a small exploration margin (the scikit-optimize default). The first term rewards points that
@@ -363,7 +363,7 @@ Sharpe ratio exceeds a benchmark $SR^{\star}$, using per-period Sharpe, skewness
 $\gamma_4$:
 
 ```math
-\operatorname{PSR}\left(SR^{\star}\right) = \Phi\left(\frac{\left(\widehat{SR} - SR^{\star}\right)\sqrt{n-1}}{\sqrt{1 - \gamma_3\,\widehat{SR} + \frac{\gamma_4 - 1}{4}\,\widehat{SR}^{2}}}\right)
+\mathrm{PSR}\left(SR^{\star}\right) = \Phi\left(\frac{\left(\widehat{SR} - SR^{\star}\right)\sqrt{n-1}}{\sqrt{1 - \gamma_3\,\widehat{SR} + \frac{\gamma_4 - 1}{4}\,\widehat{SR}^{2}}}\right)
 ```
 
 A PSR below 0.95 means the result cannot be distinguished from zero skill at the 95% level. The figure below
@@ -388,7 +388,7 @@ ordinary bootstrap would understate uncertainty. The 95% interval is built from 
 
 **False discovery control.** Testing sixty pairs at 5% would produce about three false positives with no skill at
 all, and Harvey, Liu and Zhu (2016) show how widespread this problem is in empirical finance. Experiment 2
-converts each pair's PSR into a one-sided p-value $1 - \operatorname{PSR}$, sorts them
+converts each pair's PSR into a one-sided p-value $1 - \mathrm{PSR}$, sorts them
 $p_{(1)} \le \dots \le p_{(m)}$, and applies the Benjamini-Hochberg procedure (Benjamini and Hochberg, 1995) at
 level $q = 10\%$:
 
