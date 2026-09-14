@@ -1,8 +1,9 @@
 """Cointegration tests on log prices.
 
 The Johansen trace test decides whether a basket is traded, and its leading
-eigenvector supplies the basket weights. The Engle-Granger residual test is
-reported alongside it as a cross-check only.
+eigenvector supplies the basket weights. An Engle-Granger residual test
+(``engle_granger_test``) is provided as an optional cross-check; the research
+pipeline does not call it and no result file reports it.
 
 References
 ----------

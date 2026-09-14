@@ -24,9 +24,9 @@ class TestJohansen:
         np.testing.assert_allclose(result.weights, normalize_weights(true_weights), atol=0.02)
 
     def test_false_positive_rate_on_driftless_random_walks_is_bounded(self):
-        # det_order=0 uses critical values that assume drifting prices. Without drift the nominal 5%
-        # test over-rejects (about 10-13% in simulation, see README Limitations). This pins the rate
-        # so a change in the library or the code cannot make it silently worse.
+        # The nominal 5% trace test over-rejects on random walks: about 9-10% in
+        # scripts/johansen_size_simulation.py (2,000 simulations). This bounds the rate so a change
+        # in the library or the code cannot make it silently worse.
         rejections = [
             johansen_test(np.log(random_walk_prices(n=400, k=3, seed=seed))).is_cointegrated for seed in range(100)
         ]
@@ -44,6 +44,13 @@ class TestJohansen:
         result = engle_granger_test(np.log(prices))
         assert result.rejects_at_5pct
         assert result.p_value < 0.05
+
+    def test_summary_reports_statistics_with_critical_values_and_no_p_value(self):
+        prices, _ = cointegrated_prices(n=500, seed=1)
+        summary = johansen_test(np.log(prices)).summary()
+        for key in ("trace_stat_r0", "trace_critical_r0", "max_eig_stat_r0", "max_eig_critical_r0"):
+            assert math.isfinite(summary[key])
+        assert not any("p_value" in key for key in summary)
 
     def test_rank_counts_consecutive_rejections_only(self):
         assert _sequential_rank(np.array([30.0, 10.0, 20.0]), np.array([29.0, 15.0, 3.0])) == 1

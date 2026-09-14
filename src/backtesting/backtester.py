@@ -10,7 +10,9 @@ Accounting for bar t (close prices ``P_t``, share vector ``q``):
 Equity changes only through P&L and costs; buying or shorting shares is a cash
 exchange and does not change equity. A position is sized once at entry and held in
 constant shares until exit, so there are no hidden daily rebalancing costs. A target
-state decided at bar t is filled at the close of bar t + ``execution_lag``.
+state decided at bar t is filled at the close of bar t + ``execution_lag``. The risk
+stops below, and the end-of-window close when ``force_flat_at_end`` is set, are the
+exceptions: they are filled at the close on which they are detected.
 
 Two execution-level risk rules are optional and off by default (v2 behaviour):
 
@@ -21,11 +23,15 @@ Two execution-level risk rules are optional and off by default (v2 behaviour):
 
 After either fires, the same direction is not re-entered until the target state
 returns to flat (or flips), so a stopped-out position cannot reopen on the next bar.
+Both rules are checked on each close after marking to market and are filled at that
+same close, with no ``execution_lag``, so the loss stop trades on the close that
+triggered it.
 
 Sizing is either a fixed ``gross_exposure`` multiple of equity, or, when
 ``target_volatility`` is set, ``target_volatility / sizing_volatility`` capped at
-``max_gross``, where ``sizing_volatility`` is an estimate made before the window
-being traded.
+``max_gross``, where ``sizing_volatility`` is an estimate supplied by the caller. The
+walk-forward passes the formation-window estimate: it comes before the out-of-sample
+window, but it covers the same bars as the in-sample tuning backtests.
 """
 
 from __future__ import annotations
@@ -195,7 +201,9 @@ def run_backtest(
         Starting equity; defaults to ``config.initial_capital``.
     sizing_volatility
         Annualised volatility estimate for the spread, required when
-        ``config.target_volatility`` is set. It must come from data before this window.
+        ``config.target_volatility`` is set. For out-of-sample trading it must come from
+        data before this window; the walk-forward's in-sample backtests pass the estimate
+        from the formation window they trade.
     """
     w = np.asarray(weights, dtype=float)
     _validate_inputs(prices, target_state, w, events)

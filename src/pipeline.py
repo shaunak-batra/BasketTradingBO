@@ -1,8 +1,11 @@
 """End-to-end research run: data, walk-forward evaluation, statistics and artefacts.
 
 ``run_research`` is the single code path behind the command-line interface, the
-case-study runner and the end-to-end tests, so every published number comes from
-the same place.
+case-study runner and the end-to-end tests, so every single-basket number
+(results/case_studies) comes from the same place. The universe run
+(results/v3_universe) does not go through ``run_research``: ``src.universe.evaluate_pair``
+calls the same walk-forward engine, ``run_walk_forward``, directly for each pair, and
+``src/universe.py`` computes the universe statistics itself.
 """
 
 from __future__ import annotations

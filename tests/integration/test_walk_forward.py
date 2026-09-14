@@ -18,6 +18,7 @@ from src.backtesting.walk_forward import (
     replay_with_costs,
     run_walk_forward,
 )
+from src.cointegration.engine import johansen_test
 from src.strategy.signals import SignalParams
 from src.utils.exceptions import ConfigError, DataError
 from tests.fixtures.synthetic import cointegrated_prices, random_walk_prices
@@ -83,6 +84,18 @@ class TestFixedMode:
             if not fold.traded:
                 assert fold.backtest.trades.empty
                 assert fold.backtest.equity.nunique() == 1
+
+    def test_johansen_is_estimated_on_log_formation_prices(self, mean_reverting):
+        result = run_walk_forward(mean_reverting, WALK, FREE, params=PARAMS)
+        differs_from_raw = []
+        for fold in result.folds:
+            formation = mean_reverting.iloc[fold.bars[0] : fold.bars[1]]
+            settings = {"significance": WALK.significance, "det_order": WALK.det_order, "k_ar_diff": WALK.k_ar_diff}
+            on_logs = johansen_test(np.log(formation), **settings)
+            np.testing.assert_allclose(fold.johansen.weights, on_logs.weights, rtol=1e-12)
+            differs_from_raw.append(not np.allclose(johansen_test(formation, **settings).weights, on_logs.weights, atol=1e-3))
+        # The check has teeth only if raw prices would have produced different weights.
+        assert any(differs_from_raw)
 
     def test_future_prices_cannot_change_past_results(self, mean_reverting):
         cut = WALK.formation_days + 2 * WALK.trading_days + 17

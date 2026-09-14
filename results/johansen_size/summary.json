@@ -1,0 +1,47 @@
+{
+  "nominal_level": 0.05,
+  "det_order": 0,
+  "k_ar_diff": 1,
+  "n_bars": 504,
+  "n_sims": 2000,
+  "sigma": 0.015,
+  "seeds": "scenario index",
+  "scenarios": [
+    {
+      "name": "2 assets, no drift",
+      "k": 2,
+      "drift": 0.0,
+      "rejections": 208,
+      "rate": 0.104,
+      "ci_low": 0.09062136676636959,
+      "ci_high": 0.1173786332336304
+    },
+    {
+      "name": "3 assets, no drift",
+      "k": 3,
+      "drift": 0.0,
+      "rejections": 182,
+      "rate": 0.091,
+      "ci_low": 0.07839497500200812,
+      "ci_high": 0.10360502499799187
+    },
+    {
+      "name": "2 assets, 0.05% daily drift",
+      "k": 2,
+      "drift": 0.0005,
+      "rejections": 201,
+      "rate": 0.1005,
+      "ci_low": 0.08732275295063495,
+      "ci_high": 0.11367724704936506
+    },
+    {
+      "name": "2 assets, 0.2% daily drift",
+      "k": 2,
+      "drift": 0.002,
+      "rejections": 124,
+      "rate": 0.062,
+      "ci_low": 0.05143089195816411,
+      "ci_high": 0.07256910804183589
+    }
+  ]
+}

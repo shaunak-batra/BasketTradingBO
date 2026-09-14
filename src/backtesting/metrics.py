@@ -75,7 +75,9 @@ def psr_from_moments(
 
     Probability that the true per-period Sharpe exceeds ``benchmark_per_period``
     given ``n_obs`` observations with sample ``skewness`` and raw ``kurtosis``
-    (normal = 3). Non-normal returns widen the Sharpe ratio's standard error.
+    (normal = 3). The Sharpe ratio's variance is ``1 - skewness*SR + (kurtosis - 1)/4*SR^2``,
+    so for a positive Sharpe, negative skewness and fat tails (kurtosis above 3) widen its
+    standard error, while positive skewness or thin tails narrow it.
     """
     inputs = (sharpe_per_period, skewness, kurtosis, benchmark_per_period)
     if n_obs < 2 or not all(math.isfinite(x) for x in inputs):

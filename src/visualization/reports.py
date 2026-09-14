@@ -10,12 +10,13 @@ import numpy as np
 import pandas as pd
 
 LIMITATIONS = (
-    "Baskets were chosen by the researcher from companies that exist today, so selection and survivorship "
-    "bias are not controlled.",
+    "Baskets were chosen by the researcher from stocks and ETFs that still trade today, so selection and "
+    "survivorship bias are not controlled.",
     "Prices are Yahoo Finance adjusted closes. Dividend adjustment rewrites history and Yahoo revises it over "
     "time; results are pinned to the SHA-256 of the price snapshot used.",
-    "Fills happen at the next daily close with a flat cost per side. There are no bid-ask dynamics, market "
-    "impact, short-sale restrictions or borrow recalls.",
+    "Signal-driven fills happen at the next daily close with a flat cost per side. The end-of-window close, and "
+    "loss or time stops when the protocol enables them, fill at the close on which they are detected, which is "
+    "slightly optimistic. There are no bid-ask dynamics, market impact, short-sale restrictions or borrow recalls.",
     "Fractional shares, no margin interest, no rebate on short proceeds, and uninvested cash earns nothing.",
     "Weights are frozen within each trading window, so the dollar hedge drifts as prices move.",
     "With few round trips the point Sharpe ratio is noisy; the bootstrap interval and PSR are the relevant "
@@ -51,7 +52,7 @@ def _missing(value: object) -> bool:
 def fmt_pct(value: object, digits: int = 2) -> str:
     if _missing(value):
         return "n/a"
-    number = float(value)
+    number = float(value) + 0.0  # + 0.0 turns IEEE negative zero into 0.0, so it never prints as "-0.00%"
     if math.isinf(number):
         return "inf" if number > 0 else "-inf"
     return f"{number * 100:.{digits}f}%"
@@ -64,7 +65,7 @@ def fmt_num(value: object, digits: int = 2) -> str:
         return "yes" if value else "no"
     if isinstance(value, (int, np.integer)):
         return f"{int(value):,d}"
-    number = float(value)
+    number = float(value) + 0.0
     if math.isinf(number):
         return "inf" if number > 0 else "-inf"
     return f"{number:,.{digits}f}"
@@ -275,6 +276,7 @@ def write_report(
 {_table(["Cost (bps per side)", "Total return", "Sharpe", "Max drawdown"], cost_rows)}
 
 <h2>Daily VaR and Expected Shortfall</h2>
+<p>Computed on every out-of-sample day, including flat days. Cornish-Fisher VaR is n/a where the expansion is not monotone for the sample skewness and kurtosis, because the adjusted quantile is not valid there.</p>
 {_table(["Method", "Confidence", "VaR", "Expected shortfall"], risk_rows) if risk_rows else "<p>Not enough out-of-sample returns.</p>"}
 
 <h2>Data provenance</h2>

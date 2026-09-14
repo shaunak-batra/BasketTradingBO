@@ -9,9 +9,10 @@ For every fold:
    basket actually hedged), half-life. A fold that fails any of them is not traded.
 4. Choose signal parameters: either fixed, or tuned by Bayesian optimisation on
    the formation window only.
-5. Trade the following ``trading_days`` bars with weights, parameters and position
-   size frozen. The z-score warm-up uses the last ``lookback`` bars of the formation
-   window, which are already in the past.
+5. Trade the following ``trading_days`` bars with weights, parameters and the
+   gross-exposure multiple frozen (each entry is sized on equity at that bar). The
+   z-score warm-up uses the last ``lookback - 1`` bars of the formation window, which
+   are already in the past, so the first trading bar already has a z-score.
 6. Close any open position at the end of the trading window.
 
 Trading windows do not overlap, and equity carries from one fold to the next, so

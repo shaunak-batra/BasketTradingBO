@@ -73,8 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     ordered = sorted(rows.values(), key=lambda row: (order[row["basket"]], MODES.index(row["mode"])))
     save_json({"protocol_sha256": protocol.sha256, "rows": ordered}, summary_path)
     markdown = render_results_markdown(ordered)
+    # summary.md lives in results/case_studies/, so its links must be relative to that folder.
+    summary_markdown = render_results_markdown(ordered, link_root="results/case_studies")
     # newline="\n" everywhere: re-running must change only the numbers, not every line ending.
-    (CASE_STUDY_DIR / "summary.md").write_text(markdown + "\n", encoding="utf-8", newline="\n")
+    (CASE_STUDY_DIR / "summary.md").write_text(summary_markdown + "\n", encoding="utf-8", newline="\n")
     if not args.no_readme:
         readme = PROJECT_ROOT / "README.md"
         updated = replace_block(readme.read_text(encoding="utf-8"), markdown)

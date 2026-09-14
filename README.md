@@ -23,7 +23,7 @@ The answer is **no**, and the project measures why. Two experiments were run:
 |---|---|---|
 | What was tested | 5 hand-picked baskets, fixed and Bayesian-optimised thresholds | 60 ETF pairs chosen by a pre-registered rule, with positive controls |
 | Out-of-sample period | 2012 to 2024 (control basket from late 2022) | 2012 to 2024 |
-| Statistically significant results | None (every PSR below 0.95) | 0 of 60 after Benjamini-Hochberg at 10% |
+| Statistically significant results | None (every PSR below 0.95) | 0 of the 42 tested pairs after Benjamini-Hochberg at 10% |
 | Out-of-sample Sharpe ratio | From -0.41 to 0.12 across the 10 runs | Median -0.14 across the 42 traded pairs (-0.02 with no frictions) |
 | Main finding | Losses came from unhedged baskets and a stop that could not fire; tuning overfit | Genuinely cointegrated spreads earn about 0.5 bps per trade against about 10 bps of cost |
 
@@ -413,14 +413,17 @@ quantile that adjusts the normal quantile $z$ for sample skewness $S$ and excess
 z_{CF} = z + \frac{(z^2 - 1)S}{6} + \frac{(z^3 - 3z)K}{24} - \frac{(2z^3 - 5z)S^2}{36}
 ```
 
-Expected Shortfall is reported for the historical and Gaussian methods. These are descriptive analytics on
+Expected Shortfall is reported for the historical and Gaussian methods. The Cornish-Fisher expansion is only a
+valid quantile map while it increases with $z$; where the sample skewness and kurtosis break that, which is common
+for strategy returns made mostly of flat days, its VaR is reported as n/a. These are descriptive analytics on
 realised returns. They do not drive position sizing.
 
 ## 5. Why version 1 was wrong
 
-The first version of this project published a Sharpe ratio, a drawdown, an optimiser that had found good
-parameters, and a case study explaining the results. An audit showed that **every one of those numbers was an
-artefact of the backtester, not of the strategy**. The core defect was a single line:
+The first version of this project published backtest results, a case study explaining them, and headline
+performance figures. An audit showed that **none of those numbers could be trusted**: the backtester could not
+record profit or loss correctly, and the headline example (Sharpe 1.23, +15.4%) matched no run at all. The core
+defect was a single line:
 
 ```python
 portfolio_value = self.initial_capital + position_values - cumulative_costs
@@ -490,7 +493,9 @@ the zero-trading-cost Sharpe ratios range from -0.40 to 0.15.
 the trace test in 1 of 26 windows, XOM/CVX in 4 and EWA/EWC in 9. Relationships commonly described as
 cointegrated mostly are not, window by window. The control basket, with no economic link, passed in 3 of 5
 windows, which prompted a check of the test itself. Simulation shows that with a constant term and no drift in
-prices, the nominal 5% trace test rejects about 12% to 13% of the time; with meaningful drift it rejects about 5% to 6%.
+prices, the nominal 5% trace test rejects about 10% of the time on two-asset baskets of 504 days (9% with three assets); a realistic drift of 0.05%
+a day leaves that at 10%, and only a large 0.2% daily drift brings it down to about 6%
+([scripts/johansen_size_simulation.py](scripts/johansen_size_simulation.py), 2,000 simulations per case).
 The test was not changed mid-experiment, because that would break pre-registration.
 
 ![Z-score and thresholds by fold](results/case_studies/commodity_countries_ewa_ewc/optimized/plots/zscore.png)
@@ -581,11 +586,11 @@ also replayed with its trading decisions frozen at 0, 5, 10 and 20 bps and with 
 | Median out-of-sample Sharpe (traded pairs) | **-0.14** | -0.02 |
 | Pairs with positive Sharpe | 14 of 42 | 20 of 42 |
 | Equal-weight portfolio, 2012 to 2024 | **-0.69%**, Sharpe -0.39 [-0.90, 0.08], PSR 0.08 | +0.31%, Sharpe 0.18 [-0.35, 0.66], PSR 0.74 |
-| Significant after Benjamini-Hochberg at 10% | **0 of 60** | |
+| Significant after Benjamini-Hochberg at 10% | **0 of 42** tested pairs | |
 
 Of 1,560 folds, 176 were traded (11.3%). The rest were skipped because the basket was not cointegrated (1,276),
 not hedged (102) or reverted too slowly (6). The 542 round trips produced 69 time-stop exits, 10 z-score stop
-exits and **no loss-stop exits**: once positions were hedged and sized by risk, no trade lost 10% of the equity it
+exits and **no loss-stop exits**: once positions were hedged and held to at most 1x gross, no trade lost 10% of the equity it
 was sized on.
 
 ![Out-of-sample Sharpe distribution](results/v3_universe/plots/sharpe_distribution.png)
@@ -651,8 +656,10 @@ The success criteria were written in [docs/RESEARCH_V3.md](docs/RESEARCH_V3.md) 
 - *Not promising* was defined as a median Sharpe at or below zero across at least 50 pairs. All 60 pairs were
   evaluated and 42 traded. The median across those 42 was -0.14; the 18 that never traded have no Sharpe ratio,
   and counting them as zero gives a median of 0.00 across all 60, still at or below zero: **met**.
+  The criteria did not say how to treat pairs that never trade, so this is an interpretation; counting them as
+  zero puts the median exactly on the boundary, and either reading gives the same verdict.
 
-The conclusion was therefore fixed before it was observed: **daily cointegration pairs trading on this universe,
+The criteria were fixed before the run, and either reading of them gives the same verdict: **daily cointegration pairs trading on this universe,
 with these costs, does not produce an edge.** The v3.0 rules did what they were designed to do. They removed
 directional exposure and released stale positions, but they could not create an edge that the data does not
 contain. Full detail is in [docs/RESULTS_V3.md](docs/RESULTS_V3.md).
@@ -695,6 +702,7 @@ pytest                              # full test suite, about 80 seconds, no netw
 | `python scripts/run_case_studies.py` | All of Experiment 1, and regenerates the results table in this README |
 | `python scripts/run_universe.py --config config/config_v3.yaml --universe config/universe_v3.yaml` | All of Experiment 2: `summary.json`, per-pair table, after-cost daily returns of every pair, charts |
 | `python scripts/make_readme_figures.py` | The explanatory figures in `docs/figures/` |
+| `python scripts/johansen_size_simulation.py` | False-positive rate of the Johansen filter on random walks: `results/johansen_size/summary.json` |
 
 Price data is not committed, because redistributing Yahoo data is not permitted. The first run downloads the
 prices and writes a snapshot; later runs reuse it. Every result records the SHA-256 of the snapshot it used, so
@@ -705,7 +713,7 @@ the cause. With the same snapshot, runs are deterministic: the optimiser and the
 
 The suite in [tests/](tests/) runs on every push through GitHub Actions
 ([.github/workflows/tests.yml](.github/workflows/tests.yml)). It needs no network, because the data layer is fed
-synthetic prices. It contains 202 tests with 96% line coverage, in four groups.
+synthetic prices. It contains 211 tests with 96% line coverage, in four groups.
 
 - **Cases with known answers.** Flat prices lose exactly the round-trip cost; a known price move produces a known
   P&L; borrow fees, cost scaling, sizing, stops and re-entry rules match hand-computed values.
@@ -742,11 +750,13 @@ docs/
 results/
   case_studies/                Experiment 1: summary files and one folder per basket and mode
   v3_universe/                 Experiment 2: summary, per-pair table, daily pair returns, charts
+  johansen_size/               simulated false-positive rate of the cointegration filter
 scripts/
   run_pipeline.py              one basket
   run_case_studies.py          Experiment 1, regenerates the README table
   run_universe.py              Experiment 2
   make_readme_figures.py       explanatory figures
+  johansen_size_simulation.py  false-positive rate of the Johansen filter
 src/
   data/market_data.py          download, alignment, validation, snapshots
   cointegration/engine.py      Johansen and Engle-Granger tests, weight normalisation, net exposure
@@ -778,7 +788,7 @@ setup.py, pytest.ini           packaging and test configuration
 - **Selection and survivorship.** Experiment 2's families were defined by the researcher and contain only funds
   that still exist. ETFs greatly reduce, but do not remove, survivorship bias.
 - **Cointegration test size.** With the constant deterministic term used here, the nominal 5% Johansen trace test
-  rejects about 12% to 13% of the time on driftless random walks, so the cointegration filter is looser than its label.
+  rejects about 10% of the time on driftless or slowly drifting random walks, so the cointegration filter is looser than its label.
 - **Execution.** Signal fills occur at the next daily close with a flat cost per side, while risk stops fill at the
   close on which they are detected, which is slightly optimistic. There are no bid-ask dynamics,
   market impact, short-sale constraints or borrow recalls. Shares are fractional, short proceeds earn no rebate,
@@ -792,7 +802,8 @@ setup.py, pytest.ini           packaging and test configuration
 
 ## 14. Future work
 
-The finding says the gross edge at daily frequency is roughly the size of the spread being crossed, so useful next
+The finding says that in stable spreads the gross edge at daily frequency is about one twentieth of the cost of
+trading it, so useful next
 steps must change the economics rather than the parameters. Each would be a new protocol, frozen before running,
 evaluated on data it has not seen.
 

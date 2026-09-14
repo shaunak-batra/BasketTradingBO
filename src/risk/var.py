@@ -7,6 +7,7 @@ sizing.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -39,7 +40,8 @@ def historical_var(returns: pd.Series | np.ndarray, confidence: float = 0.95) ->
     r = _prepare(returns, confidence)
     quantile = float(np.quantile(r, 1.0 - confidence))
     tail = r[r <= quantile]
-    return RiskEstimate("historical", confidence, -quantile, float(-tail.mean()))
+    # 0.0 - x rather than -x, so a zero quantile (common when most days are flat) is stored as 0.0, not -0.0.
+    return RiskEstimate("historical", confidence, 0.0 - quantile, 0.0 - float(tail.mean()))
 
 
 def parametric_var(returns: pd.Series | np.ndarray, confidence: float = 0.95) -> RiskEstimate:
@@ -63,13 +65,31 @@ def cornish_fisher_quantile(z: float, skewness: float, excess_kurtosis: float) -
     )
 
 
+def cornish_fisher_is_monotone(skewness: float, excess_kurtosis: float, z_range: float = 4.0) -> bool:
+    """True when the Cornish-Fisher expansion increases with z on ``[-z_range, z_range]``.
+
+    The expansion is only a valid quantile map while it is monotone. Strongly skewed or
+    fat-tailed samples break this, and the adjusted "quantile" then stops meaning anything
+    (it can even put the 95% loss threshold on the gain side).
+    """
+    z = np.linspace(-z_range, z_range, 801)
+    slope = 1 + z * skewness / 3 + (z**2 - 1) * excess_kurtosis / 8 - (6 * z**2 - 5) * skewness**2 / 36
+    return bool(np.all(slope > 0))
+
+
 def cornish_fisher_var(returns: pd.Series | np.ndarray, confidence: float = 0.95) -> RiskEstimate:
-    """VaR with a quantile adjusted for sample skewness and excess kurtosis (no closed-form ES)."""
+    """VaR with a quantile adjusted for sample skewness and excess kurtosis (no closed-form ES).
+
+    VaR is NaN when the expansion is not monotone for the sample moments, because the
+    adjusted quantile is not valid there.
+    """
     r = _prepare(returns, confidence)
     mu = float(r.mean())
     sigma = float(r.std(ddof=1))
     skewness = float(stats.skew(r, bias=False))
     excess_kurtosis = float(stats.kurtosis(r, fisher=True, bias=False))
+    if not cornish_fisher_is_monotone(skewness, excess_kurtosis):
+        return RiskEstimate("cornish_fisher", confidence, math.nan, None)
     z = cornish_fisher_quantile(stats.norm.ppf(1.0 - confidence), skewness, excess_kurtosis)
     return RiskEstimate("cornish_fisher", confidence, float(-(mu + sigma * z)), None)
 

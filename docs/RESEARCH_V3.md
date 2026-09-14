@@ -2,9 +2,14 @@
 
 **Status: written before v3.0 was run.** The v3.0 scope in section 4 was then frozen as
 `config/config_v3.yaml`, with the universe in `config/universe_v3.yaml`, and the success criteria in section 5
-were fixed before the run. Results are in [RESULTS_V3.md](RESULTS_V3.md). The other candidates (C4 to C8) are
-still proposals. v2 stays exactly as it is (`config/config.yaml`, results in `results/case_studies/`). This memo
-collects the evidence for what to change, and the rules under which a v3 could be tested honestly.
+were fixed before the run. Results are in [RESULTS_V3.md](RESULTS_V3.md). v2 stays exactly as it is
+(`config/config.yaml`, results in `results/case_studies/`).
+
+**Edits after the run.** Later edits correct factual errors and record where the implementation departed from
+the proposal. Each one is marked *post-run* in the text. No rule, parameter, scope item or success criterion was
+changed. C5 was carried out in reduced form (see its note); C4 and C6 to C8 remain proposals.
+
+This memo collects the evidence for what to change, and the rules under which a v3 could be tested honestly.
 
 ## 1. What v2 actually showed
 
@@ -15,11 +20,11 @@ Measured from the committed v2 results, not from impressions.
 | Baskets are usually **not hedged** | net exposure above 0.2 of gross in 53% of all folds and 50% of traded folds; above 0.5 in 22% of traded folds | Johansen weights per fold in `results.json` |
 | In-sample Sharpe barely predicts out-of-sample | correlation +0.21 (fixed), +0.20 (optimized) across traded folds | fold tables |
 | Tuning lowered the hit rate | optimised folds positive out of sample 35% of the time vs 56% for fixed thresholds | fold tables |
-| Trades rarely go far underwater, and the ones that do never come back | of 84 closed trades, median worst drawdown inside a trade was -1.1%; 11 breached -5% and only 3 recovered; **none that breached -10% recovered** | trade ledgers + daily equity |
+| Trades rarely go far underwater, and the deepest never come back | of 84 closed trades, median worst drawdown inside a trade was -1.1%; 11 breached -5%, only 3 of them closed above -5% and just 1 with a profit; **none of the 3 that breached -10% closed above -10%** (*post-run wording fix*) | trade ledgers + daily equity |
 | A hard stop would have helped | replacing every trade that breached the level with a loss at that level: mean trade -0.65% actual, -0.18% with a -10% stop, -0.12% with -5% | same |
 | The half-life filter never binds | traded folds had half-lives of 6.6 to 29.7 days (median 12.2) against a 126-day limit | fold tables |
-| The book is flat most of the time | 23.5% of folds traded | fold tables |
-| The cointegration filter is oversized | 12-13% rejection at a nominal 5% on driftless random walks; 5-6% when prices drift | simulation, see README limitations |
+| The book is flat most of the time | 16.5% of folds traded, 18 of 109 in each mode (*post-run correction: previously 23.5%, an unweighted average of per-basket rates*) | fold tables |
+| The cointegration filter is oversized | about 10% rejection at a nominal 5% on driftless two-asset random walks of 504 bars (9% with three assets); still 10% with a realistic 0.05% daily drift, and 6% only with a large 0.2% daily drift (*post-run correction: previously quoted as 12-13% and 5-6%, which no saved simulation reproduced*) | `scripts/johansen_size_simulation.py`, saved in `results/johansen_size/summary.json` |
 
 Read together: the losses came from **directional exposure and a stop that could not fire**, not from the
 signal being backwards. The tuning layer added variance, not edge.
@@ -46,7 +51,8 @@ including the failures, and **change one thing per version** so that any differe
 ### C1. Require hedged weights
 
 * **Why.** Half of all traded folds carried more than 0.2 of gross as net exposure; the two worst trades
-  were essentially long-only positions in a crash.
+  were net-long bets caught in a sell-off: XOM/CVX fully long both oil majors into the COVID crash (net
+  exposure 1.0), and the control basket about 60% net long (net exposure 0.62) (*post-run wording fix*).
 * **Rule.** Reject a fold when `|sum(w)| / sum(|w|)` exceeds a pre-registered cap (0.2 is the natural
   starting point), or construct the position beta-neutral using formation-window betas. Market-neutral
   practice normally keeps portfolio beta inside ±0.1.
@@ -64,12 +70,13 @@ including the failures, and **change one thing per version** so that any differe
   standard deviation grew as fast as the loss. A z-score stop is not a loss limit.
 * **Rule.** Close the position when its mark-to-market loss reaches a pre-registered fraction of the equity
   it was sized on (-10% cut zero winners in v2, so it is the conservative choice), and when holding time
-  exceeds a multiple of the formation half-life (3x is the common choice). Keep the z-score stop only as a
+  exceeds a multiple of the formation half-life (3x is the common choice). *Post-run note: v3.0 used a fixed `max_holding_bars: 36`, about 3x the
+  12.2-day median half-life of v2's traded folds, not a multiple of each fold's own half-life.* Keep the z-score stop only as a
   signal-level exit. Stop-losses at a residual band (e.g. 4σ) and minimum-profit constructions are both
   standard in the pairs literature.
 * **Code.** Execution-level rule inside [src/backtesting/backtester.py](../src/backtesting/backtester.py)
-  (the backtester gains a `stop_loss_fraction`, checked against equity at entry), plus `max_holding_bars`, also
-  checked in the backtester.
+  (the backtester gains a `stop_loss_fraction`, checked against equity at entry), plus a `max_holding_bars` time
+  stop, checked in the same place (*post-run correction: the draft placed it in the signal state machine*).
 * **Test.** A constructed losing path must exit on the bar the threshold is breached, with the ledger
   reason recorded; no effect when the threshold is not breached.
 * **Effort.** Small. **Expected effect:** truncates the left tail. It cannot create edge.
@@ -83,15 +90,19 @@ including the failures, and **change one thing per version** so that any differe
   factor literature raise Sharpe ratios substantially (Moreira and Muir), though the mechanism there is
   timing, not sizing.
 * **Code.** Replace `gross_exposure` with `target_volatility` plus `max_gross` in `BacktestConfig`, and pass
-  the fold's volatility estimate into sizing.
+  the fold's volatility estimate into sizing. *Post-run note: implemented alongside `gross_exposure`, which still
+  sets fixed gross when `target_volatility` is null (as in v2); `resolve_gross` computes
+  `min(max_gross, target_volatility / sizing_volatility)`.*
 * **Test.** Realised volatility of fold returns should cluster near the target on synthetic data.
 * **Effort.** Small to medium. **Expected effect:** comparable risk across folds and baskets; the Sharpe
   ratio becomes a fairer comparison. Not an alpha source.
 
 ### C4. Fix the cointegration test's size
 
-* **Why.** Measured 12-13% false positives at a nominal 5%. Applying critical values from the wrong
-  deterministic-term case is a known way to roughly double the rejection rate, which matches what we saw.
+* **Why.** Measured about 10% false positives at a nominal 5% on simulated random walks
+  (`scripts/johansen_size_simulation.py`; *post-run correction: previously 12-13%*). Applying critical values
+  from the wrong deterministic-term case is a known way to roughly double the rejection rate, which is
+  consistent with this.
 * **Rule.** Either bootstrap the rank test (Cavaliere, Rahbek and Taylor, 2012, with the heteroskedastic
   variant from 2014) or use critical values for the deterministic case actually assumed. Bootstrapping is
   more work but removes the ambiguity and handles heteroskedasticity, which equity spreads have.
@@ -116,6 +127,9 @@ including the failures, and **change one thing per version** so that any differe
 * **Code.** `scripts/run_universe.py` plus a universe definition file; fold loop parallelised with joblib.
 * **Effort.** Medium to large, mostly data plumbing and compute. **This is the change that most affects
   whether the conclusion is trustworthy.**
+* **Post-run note.** v3.0 carried out C5 in reduced form: a 60-pair ETF universe (`config/universe_v3.yaml`,
+  run by `scripts/run_universe.py`). Benjamini-Hochberg at 10% was applied to `1 - PSR` of each pair's
+  out-of-sample returns, not to the cointegration tests, and pairs run one at a time with no joblib parallelism.
 
 ### C6. Dynamic hedge ratios (Kalman filter)
 
@@ -141,7 +155,7 @@ including the failures, and **change one thing per version** so that any differe
 
 ### C8. Factor-residual statistical arbitrage
 
-* **Why.** Pairwise cointegration finds few tradable relationships (23.5% of folds). Trading the residual
+* **Why.** Pairwise cointegration finds few tradable relationships (16.5% of folds). Trading the residual
   after removing market and sector factors, with an OU model on the residual and an s-score signal, covers a
   far larger opportunity set (Avellaneda and Lee, 2010).
 * **Expectations.** Their reported Sharpe was 1.44 for 1997-2007 but only ~0.9 for 2003-2007, and the pairs
@@ -155,6 +169,10 @@ Keep it minimal and mechanical, so that the result is interpretable:
 
 * **v3.0 = C1 + C2 + C3.** Three rules, no new tuned parameters, all motivated by measured v2 failures.
   Evaluate on a new universe (C5 at whatever scale the data allows).
+* *Post-run note:* v3.0 deliberately breaks the one-change-per-version rule of section 2. It moves three rules
+  (five settings) at once, runs fixed thresholds only, and changes the evaluation universe, with no v2-rules
+  baseline on the new universe. A difference between v2 and v3.0 therefore cannot be attributed to any single
+  rule, or separated from the change of universe. The one-change rule applies again from v3.1.
 * **v3.1 = v3.0 + C4.** Once the bootstrap test is in, the filter means what it says.
 * **v4 candidates, one per version:** C7 (model-implied thresholds), then C6 (Kalman), then C8 as a separate
   project.
@@ -165,9 +183,15 @@ Decide before running, or the run cannot fail honestly:
 
 * **Promising** if, across the screened universe, the median out-of-sample Sharpe ratio is above zero **and**
   the number of baskets with PSR > 0.95 after Benjamini-Hochberg control exceeds what the null predicts.
+  *Implementation note (post-run): in v3.0 this count was the number of Benjamini-Hochberg discoveries at
+  q = 10% on each pair's one-sided p-value `1 - PSR` (`fdr_level: 0.10` in `config/universe_v3.yaml`). The BH
+  level was not stated here in advance. No pair reached PSR > 0.95 either (highest 0.910), so both readings
+  give zero.*
 * **Not promising** if the median out-of-sample Sharpe is at or below zero across at least 50 baskets. In
   that case the honest conclusion is that this strategy family does not work in this period at daily
-  frequency with these costs, and the write-up says so.
+  frequency with these costs, and the write-up says so. *Implementation note (post-run): this rule did not say
+  how to treat baskets that never trade. In v3.0, 42 of the 60 pairs traded; RESULTS_V3.md reads the verdict
+  both ways.*
 * Either way, report the full distribution, the skipped folds, and the cost sensitivity.
 
 ## 6. Costs and prerequisites
@@ -183,7 +207,8 @@ Decide before running, or the run cannot fail honestly:
 * Which universe, exactly, and screened how (sub-industry, ETF list, liquidity floor)?
 * Trade more than one cointegrating vector when the rank exceeds 1?
 * Is daily close-to-close the right frequency, given that the edge, if any, may be intraday?
-* Should the half-life filter be tightened (it never binds now) or dropped?
+* Should the half-life filter be tightened (it never bound in v2, and in v3.0 it skipped only 6 of 1,560 folds,
+  all on IVV/SPY) or dropped?
 
 ## 8. References
 

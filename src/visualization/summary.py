@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import posixpath
+
 START_MARKER = "<!-- CASE_STUDY_RESULTS:START -->"
 END_MARKER = "<!-- CASE_STUDY_RESULTS:END -->"
 
@@ -43,14 +45,20 @@ def _num(value: float | None, digits: int = 2) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
 
 
-def render_results_markdown(rows: list[dict]) -> str:
+def render_results_markdown(rows: list[dict], link_root: str = "") -> str:
+    """Markdown table of headline rows.
+
+    Links are written relative to ``link_root``, the repository-relative folder of the file the
+    table goes into ("" for README.md at the root), because GitHub resolves links from that folder.
+    """
     lines = [
         "| Basket | Mode | Out-of-sample | Folds traded | Closed trades | Total return | CAGR | Sharpe [95% CI] | PSR | Max drawdown | Sharpe at 0 / 20 bps |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
+        target = posixpath.relpath(row["results_dir"], link_root) if link_root else row["results_dir"]
         cells = [
-            f"[{' / '.join(row['tickers'])}]({row['results_dir']})",
+            f"[{' / '.join(row['tickers'])}]({target})",
             row["mode"],
             f"{row['oos_start'][:7]} to {row['oos_end'][:7]}",
             f"{row['folds_traded']}/{row['n_folds']}",

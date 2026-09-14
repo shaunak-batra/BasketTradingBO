@@ -13,7 +13,9 @@ python scripts/run_universe.py --config config/config_v3.yaml --universe config/
 ## What v3.0 changed
 
 Three rules, each answering a failure measured in v2 (see [RESEARCH_V3.md](RESEARCH_V3.md)). Signal
-thresholds, windows and costs are identical to v2, so any difference is attributable.
+thresholds, windows and costs are identical to v2's fixed-threshold run, and optimisation is switched off. The
+evaluation universe also changed (see below), so v2 and v3.0 are not a controlled comparison: no difference
+between them can be attributed to the three rules alone, or to any one of them.
 
 | Rule | Setting | The v2 failure it answers |
 |---|---|---|
@@ -25,12 +27,12 @@ thresholds, windows and costs are identical to v2, so any difference is attribut
 
 Every v3 rule was chosen after seeing v2's out-of-sample results, so those five baskets are design
 data and cannot also be the test. v3 runs on a different universe: **60 ETF pairs inside 17 families**,
-every pair within a family, no pair across families, and none of v2's tickers. Two families are
+every pair within a family, no pair across families, and none of v2's tickers. Two pairs are
 **positive controls** (GLD/IAU and IVV/SPY track the same underlying), so the machinery has something
-it must find.
+it must find. The other pairs in their families are ordinary test pairs.
 
-Significance is judged across all 60 pairs with Benjamini-Hochberg control at 10%, using `1 - PSR` as
-each pair's p-value.
+Significance is judged with Benjamini-Hochberg control at 10%, using `1 - PSR` as each pair's p-value,
+across the 42 pairs that traded (a pair that never trades has a flat equity curve and no PSR).
 
 ## Headline result
 
@@ -39,7 +41,7 @@ each pair's p-value.
 | Median out-of-sample Sharpe across traded pairs | **-0.140** | -0.019 |
 | Pairs with positive Sharpe | 14 of 42 | 20 of 42 |
 | Equal-weight portfolio, 2012-2024 | **-0.69%** total, Sharpe **-0.389** [-0.90, 0.08], PSR 0.081 | +0.31% total, Sharpe 0.177 [-0.35, 0.66], PSR 0.738 |
-| Discoveries after Benjamini-Hochberg at 10% | **0 of 60** | - |
+| Discoveries after Benjamini-Hochberg at 10% | **0 of 42** tested (60 evaluated) | - |
 
 Activity: 176 of 1,560 folds traded (11.3%), 542 round trips across 42 pairs. Folds were skipped as
 not cointegrated 1,276 times, as unhedged 102 times, and for a long half-life 6 times.
@@ -94,22 +96,28 @@ Fold decisions frozen, only the cost model changed (borrow still charged):
 [RESEARCH_V3.md](RESEARCH_V3.md) set these before the run:
 
 * **Promising** if the median out-of-sample Sharpe is above zero *and* the count of PSR > 0.95 pairs
-  after Benjamini-Hochberg exceeds the null expectation. Median -0.140 and zero discoveries: **not met**.
+  after Benjamini-Hochberg exceeds the null expectation. As implemented, that count is the number of
+  Benjamini-Hochberg discoveries at 10% on `1 - PSR`, which is zero; no pair reached PSR > 0.95 either (highest
+  0.910). With a median of -0.140: **not met**.
 * **Not promising** if the median is at or below zero across at least 50 baskets. All 60 pairs were
   evaluated and 42 traded. The median across those 42 is -0.140; the 18 that never traded have no Sharpe
   ratio, and counting them as zero gives a median of 0.00 across all 60, still at or below zero: **met**.
+  The criterion did not say how to treat baskets that never trade, so this is an interpretation; counting them
+  as zero puts the median exactly on the boundary, and either reading gives the same verdict.
 
-So the pre-registered conclusion stands: **daily cointegration pairs trading on this universe, with
-these costs, does not work**, and the three v3 rules did not change that. They did what they were
-designed to do, which was narrower: the hedging filter removed 102 directional folds, the 36-day time
-stop closed 69 of the 542 trades, and risk per trade became comparable across pairs. The 10% loss stop
-never fired: once positions were hedged and sized by risk, no trade lost 10% of the equity it was sized
-on. (The z-score stop fired 10 times.) Cleaner risk, same absent edge.
+So the conclusion under the pre-registered criteria stands: **daily cointegration pairs trading on this
+universe, with these costs, does not work**, and the three v3 rules did not change that. Two of them did what
+they were designed to do, which was narrower: the hedging filter removed 102 directional folds, and the 36-day
+time stop closed 69 of the 542 trades. Volatility targeting mostly could not act: 39 of the 42 traded pairs had
+a median formation-window spread volatility below the 10% target, so `max_gross: 1.0` capped most of their
+positions, and risk per trade was not made comparable across pairs. The 10% loss stop never fired: once
+positions were hedged and held to at most 1x gross on these quiet spreads, no trade lost 10% of the equity it
+was sized on. (The z-score stop fired 10 times.) Cleaner risk, same absent edge.
 
 ## What would change the conclusion
 
-Not another parameter. The result says the gross edge at daily frequency is roughly the size of the
-spread you cross, so the next versions have to change the economics, not the settings:
+Not another parameter. The result says the gross edge in stable spreads at daily frequency is about one
+twentieth of the cost of trading it, so the next versions have to change the economics, not the settings:
 
 * a shorter holding frequency, where the spread is larger relative to costs (intraday, or at least
   execution at the open with limit orders);
@@ -122,11 +130,14 @@ spread you cross, so the next versions have to change the economics, not the set
 
 * ETFs sidestep most survivorship bias but not all: funds close, and this universe is made of
   survivors chosen today.
-* `det_order: 0` over-rejects on driftless prices (about 12% at a nominal 5%), so the cointegration
-  filter is looser than its label. v3.1's bootstrap rank test addresses this.
+* The 5% trace test over-rejects: about 10% of simulated two-asset random walks pass it, with no drift or a
+  realistic one (`scripts/johansen_size_simulation.py`), so the cointegration filter is looser than its label.
+  A bootstrap rank test (C4 in [RESEARCH_V3.md](RESEARCH_V3.md), planned for v3.1) would address this; it is not
+  implemented yet.
 * `1 - PSR` is an asymptotic p-value, and pair returns are correlated (overlapping ETFs), so
   Benjamini-Hochberg control here is approximate rather than exact.
-* Fills are next-close at a flat cost per side. Real execution could be cheaper with patient limit
-  orders, which is precisely the direction the conclusion points.
+* Signal fills are next-close at a flat cost per side, while loss and time stops (69 of the 542 exits
+  here) fill at the close on which they are detected, which is slightly optimistic. Real execution could be
+  cheaper with patient limit orders, which is precisely the direction the conclusion points.
 * Six-month trading windows with a two-year formation window is one design among many; testing others
   would require a new protocol version and a fresh evaluation set.

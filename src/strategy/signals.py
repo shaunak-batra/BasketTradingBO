@@ -2,8 +2,9 @@
 
 States are +1 (long the spread), -1 (short the spread) and 0 (flat). The state at
 bar t uses only information available at the close of bar t. The backtester fills
-it ``execution_lag`` bars later, so a signal never trades on the price that
-produced it.
+it ``execution_lag`` bars later (1 by default and in both protocols). With a lag of
+at least one bar a signal never trades on the price that produced it; a lag of 0,
+which ``BacktestConfig`` allows, fills at that same close.
 
 Rules (all thresholds inclusive, in z-score units):
 
