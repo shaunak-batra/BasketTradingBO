@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from dataclasses import replace
 
 import pandas as pd
 import pytest
 
-from src.pipeline import load_protocol, main, run_research
+from src.pipeline import _git_state, load_protocol, main, run_research
 from src.strategy.signals import SignalParams
 from src.utils.io import sha256_file
 from tests.fixtures.synthetic import cointegrated_prices
@@ -128,3 +129,18 @@ def test_cli_runs_end_to_end(tmp_path, protocol, monkeypatch, capsys):
     assert code == 0
     assert (out / "results.json").exists()
     assert "Total return" in capsys.readouterr().out
+
+
+def test_dirty_flag_ignores_run_outputs_under_results(monkeypatch):
+    calls = []
+
+    def fake_git(args, **kwargs):
+        calls.append(args)
+        stdout = "abc123\n" if "rev-parse" in args else ""
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("src.pipeline.subprocess.run", fake_git)
+    assert _git_state() == {"commit": "abc123", "dirty": False}
+    status = next(args for args in calls if "status" in args)
+    # A batch of runs writes into results/, which must not make later runs look like uncommitted code.
+    assert ":(exclude)results" in status

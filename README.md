@@ -713,7 +713,7 @@ the cause. With the same snapshot, runs are deterministic: the optimiser and the
 
 The suite in [tests/](tests/) runs on every push through GitHub Actions
 ([.github/workflows/tests.yml](.github/workflows/tests.yml)). It needs no network, because the data layer is fed
-synthetic prices. It contains 211 tests with 96% line coverage, in four groups.
+synthetic prices. It contains 212 tests with 96% line coverage, in four groups.
 
 - **Cases with known answers.** Flat prices lose exactly the round-trip cost; a known price move produces a known
   P&L; borrow fees, cost scaling, sizing, stops and re-entry rules match hand-computed values.

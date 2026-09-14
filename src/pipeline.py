@@ -147,7 +147,9 @@ def _git_state() -> dict:
             return None
         return completed.stdout.strip()
 
-    status = git("status", "--porcelain")
+    # results/ is excluded: runs write their outputs there, so a batch of runs would otherwise mark
+    # every run after the first as dirty. ``dirty`` means uncommitted changes to code, configs or docs.
+    status = git("status", "--porcelain", "--", ".", ":(exclude)results")
     return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
 
 

@@ -37,6 +37,7 @@ thresholds. v2 changes how that idea is evaluated, not what it is.
 * The protocol (`config/config.yaml`) and the baskets (`config/case_studies.yaml`) were fixed
   before v2 produced any result. Each `results.json` records the protocol file's SHA-256.
 * Each result also records the SHA-256 of the exact price snapshot, the package versions, the git
-  commit (HEAD) and a `dirty` flag that is true when the working tree had uncommitted changes. The
-  commit identifies the code only when `dirty` is false.
+  commit (HEAD) and a `dirty` flag that is true when anything outside `results/` had uncommitted
+  changes. The commit identifies the code only when `dirty` is false, as it is for every committed case
+  study.
 * Nothing converts an error into a default value or a penalty score.
