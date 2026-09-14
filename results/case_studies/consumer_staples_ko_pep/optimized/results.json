@@ -8,10 +8,10 @@
     "start": "2010-01-01",
     "end_exclusive": "2025-01-01",
     "mode": "optimized",
-    "created_utc": "2026-09-13T17:01:30+00:00",
+    "created_utc": "2026-09-14T04:17:13+00:00",
     "git": {
-      "commit": "fe031d5151ab00ba2061312ddf58e31964987565",
-      "dirty": true
+      "commit": "1a9c617f60ab88a1ba22a85767eb008914b96790",
+      "dirty": false
     },
     "python": "3.10.11",
     "packages": {
@@ -186,7 +186,7 @@
     {
       "method": "historical",
       "confidence": 0.95,
-      "var": -0.0,
+      "var": 0.0,
       "expected_shortfall": 3.2034655741212305e-05
     },
     {
@@ -198,7 +198,7 @@
     {
       "method": "cornish_fisher",
       "confidence": 0.95,
-      "var": -0.002457428681278863,
+      "var": null,
       "expected_shortfall": null
     },
     {
@@ -216,7 +216,7 @@
     {
       "method": "cornish_fisher",
       "confidence": 0.99,
-      "var": 0.014721667299789834,
+      "var": null,
       "expected_shortfall": null
     }
   ],

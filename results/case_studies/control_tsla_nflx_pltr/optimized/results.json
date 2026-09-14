@@ -9,10 +9,10 @@
     "start": "2020-10-01",
     "end_exclusive": "2025-01-01",
     "mode": "optimized",
-    "created_utc": "2026-09-13T17:03:13+00:00",
+    "created_utc": "2026-09-14T04:18:33+00:00",
     "git": {
-      "commit": "fe031d5151ab00ba2061312ddf58e31964987565",
-      "dirty": true
+      "commit": "1a9c617f60ab88a1ba22a85767eb008914b96790",
+      "dirty": false
     },
     "python": "3.10.11",
     "packages": {
@@ -206,7 +206,7 @@
     {
       "method": "cornish_fisher",
       "confidence": 0.95,
-      "var": 0.01315183441719689,
+      "var": null,
       "expected_shortfall": null
     },
     {
@@ -224,7 +224,7 @@
     {
       "method": "cornish_fisher",
       "confidence": 0.99,
-      "var": 0.08261192550110084,
+      "var": null,
       "expected_shortfall": null
     }
   ],
